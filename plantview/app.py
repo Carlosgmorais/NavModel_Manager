@@ -1,6 +1,7 @@
 import os
 os.environ['QT_API'] = 'pyside6'
 import sys
+import math
 import time
 from pathlib import Path
 import numpy as np

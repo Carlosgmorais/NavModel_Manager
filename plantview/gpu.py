@@ -88,6 +88,27 @@ def make_instance_actor(plot, source, origins, color):
     return actor
 
 
+
+def combine_poly_datas(mesh_list: List[Any]) -> Any:
+    """Concatenates PolyData meshes using hardware-accelerated C++ vtkAppendPolyData.
+    Preserves all points and cells exactly without welding, tolerance merging, or topology distortion.
+    """
+    valid = [m for m in mesh_list if m is not None and getattr(m, 'n_points', 0) > 0 and getattr(m, 'n_cells', 0) > 0]
+    if not valid:
+        return pv.PolyData() if hasattr(pv, 'PolyData') else None
+    if len(valid) == 1:
+        return valid[0]
+    if hasattr(vtk, 'vtkAppendPolyData') and hasattr(valid[0], 'GetPoints'):
+        appender = vtk.vtkAppendPolyData()
+        for m in valid:
+            appender.AddInputData(m)
+        appender.Update()
+        return pv.wrap(appender.GetOutput())
+    if hasattr(valid[0], 'merge'):
+        return valid[0].copy(deep=True).merge(valid[1:], merge_points=False)
+    return valid[0]
+
+
 def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str], Dict[str, Any]]:
     """Instance same-color translated clones, batch large industrial meshes, retain all names in tree."""
     buckets = defaultdict(list)
@@ -128,12 +149,13 @@ def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str]
             unique_items_by_layer_color[(layer, color)].extend(items)
 
     for (layer, color), items in unique_items_by_layer_color.items():
-        if len(parts) > 30 and hasattr(items[0][1], 'merge') and len(items) > 1:
-            # High-performance batching: merge non-instanced meshes of same (layer, color)
-            # into a single compound PolyData actor. Reduces draw calls from thousands to dozens!
+        if len(parts) > 30 and len(items) > 1:
+            # High-performance hardware batching: combine meshes of same (layer, color)
+            # into a single compound PolyData actor using C++ vtkAppendPolyData.
+            # Preserves 100% of vertices, faces and coordinates without distortion.
             try:
                 mesh_list = [m for _, m, _, _ in items]
-                merged_mesh = items[0][1].copy(deep=True).merge(mesh_list[1:])
+                merged_mesh = combine_poly_datas(mesh_list)
                 actor = plot.add_mesh(merged_mesh, color=color, smooth_shading=False,
                                       reset_camera=False, render=False)
                 optimize_actor(actor)
