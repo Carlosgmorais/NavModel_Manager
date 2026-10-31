@@ -2,58 +2,75 @@
 
 Reproduces the exact UI layout from Navisworks Manage:
 - Dialog Title: "Loading ..."
+- Window Icon: Classic Navisworks 'N' logo
 - Percentage readout: "0,00%"
-- Primary progress bar
+- Primary progress bar (Windows native / classic Navisworks green)
 - Filename and current phase: "Loading ESTUDO - NOME.dwg ..."
 - Secondary sub-progress bar
 - Bottom right "Cancel" button
 """
+from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets as W
+from .icons import create_navis_icon
 
 
 class NavisLoadingDialog(W.QDialog):
     cancelled = QtCore.Signal()
 
-    def __init__(self, parent=None, title='PlantView • Abrindo modelo'):
-        super().__init__(parent, QtCore.Qt.Window | QtCore.Qt.WindowTitleHint | QtCore.Qt.WindowCloseButtonHint)
+    def __init__(self, parent=None, title='Loading ...'):
+        super().__init__(
+            parent,
+            QtCore.Qt.Dialog |
+            QtCore.Qt.WindowTitleHint |
+            QtCore.Qt.WindowCloseButtonHint |
+            QtCore.Qt.CustomizeWindowHint
+        )
         self.setWindowTitle(title)
-        self.setMinimumSize(560, 200)
+        self.setWindowIcon(create_navis_icon('app_logo', 32))
+        self.setFixedSize(510, 165)
+        self.setModal(False)
+
+        # Exact Navisworks / Windows Classic styling
         self.setStyleSheet("""
             QDialog {
-                background-color: #f5f7fb;
-                color: #1e1e1e;
-                font-family: 'Segoe UI', Tahoma, sans-serif;
+                background-color: #f0f0f0;
+                color: #000000;
+                font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
             }
             QLabel {
-                color: #202020;
-                font-size: 12px;
+                color: #000000;
             }
             QLabel#pctLabel {
-                font-size: 13px;
-                font-weight: 600;
-                color: #1a1a1a;
+                font-size: 12px;
+                font-weight: 500;
+                color: #000000;
+                padding-bottom: 2px;
             }
             QLabel#fileLabel {
                 font-size: 12px;
-                color: #2b2b2b;
+                color: #000000;
+                padding-top: 4px;
+                padding-bottom: 2px;
             }
             QProgressBar {
-                border: none;
-                border-radius: 6px;
+                border: 1px solid #8e8f8f;
+                border-radius: 0px;
                 background-color: #e6e6e6;
                 height: 16px;
                 text-align: center;
             }
             QProgressBar::chunk {
-                background-color: #1677d2;
-                border-radius: 6px;
+                background-color: #06b025;
             }
             QPushButton {
                 background-color: #e1e1e1;
                 border: 1px solid #adadad;
-                padding: 5px 20px;
+                border-radius: 0px;
+                padding: 3px 18px;
                 font-size: 12px;
+                color: #000000;
                 min-width: 75px;
+                min-height: 23px;
             }
             QPushButton:hover {
                 background-color: #e5f1fb;
@@ -61,14 +78,18 @@ class NavisLoadingDialog(W.QDialog):
             }
             QPushButton:pressed {
                 background-color: #cce4f7;
+                border: 1px solid #005499;
+            }
+            QPushButton:focus {
+                border: 1px solid #0078d4;
             }
         """)
 
         layout = W.QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(4)
 
-        # Percentage label at top
+        # Percentage label at top centered
         self.pct_label = W.QLabel('0,00%')
         self.pct_label.setObjectName('pctLabel')
         self.pct_label.setAlignment(QtCore.Qt.AlignCenter)
@@ -82,41 +103,56 @@ class NavisLoadingDialog(W.QDialog):
         layout.addWidget(self.bar_main)
 
         # File & action label
-        self.file_label = W.QLabel('Preparando modelo...')
+        self.file_label = W.QLabel('Loading ...')
         self.file_label.setObjectName('fileLabel')
+        self.file_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         layout.addWidget(self.file_label)
 
         # Sub Progress Bar
         self.bar_sub = W.QProgressBar()
-        self.bar_sub.setRange(0, 100)
+        self.bar_sub.setRange(0, 10000)
         self.bar_sub.setValue(0)
         self.bar_sub.setTextVisible(False)
         layout.addWidget(self.bar_sub)
 
+        layout.addSpacing(6)
+
         # Bottom row with Cancel button on right
         btn_layout = W.QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.addStretch()
-        self.cancel_btn = W.QPushButton('Cancelar')
+        self.cancel_btn = W.QPushButton('Cancel')
         self.cancel_btn.clicked.connect(self.on_cancel)
         btn_layout.addWidget(self.cancel_btn)
         layout.addLayout(btn_layout)
 
         self._is_cancelled = False
-
-    def set_progress(self, pct: float, message: str = ''):
-        """Update percentage (0.0 to 100.0) and message."""
-        self.bar_main.setValue(int(pct * 100))
-        self.pct_label.setText(f'{pct:.2f}%'.replace('.', ','))
-        if message:
-            self.file_label.setText(message)
-            # Alternate sub bar to give feedback
-            self.bar_sub.setRange(0, 0) if 10 <= pct < 60 else self.bar_sub.setRange(0, 100)
-            if pct >= 60:
-                self.bar_sub.setValue(int(pct))
-        QtCore.QCoreApplication.processEvents()
+        self._current_file = ''
 
     def set_file_name(self, filename: str):
-        self.file_label.setText(f'Loading {filename} ...')
+        self._current_file = Path(filename).name if filename else ''
+        self.file_label.setText(f'Loading {self._current_file} ...' if self._current_file else 'Loading ...')
+        QtCore.QCoreApplication.processEvents()
+
+    def set_progress(self, pct: float, message: str = ''):
+        """Update percentage (0.0 to 100.0) and optional detail."""
+        pct_clamped = max(0.0, min(100.0, float(pct)))
+        self.bar_main.setValue(int(pct_clamped * 100))
+        self.pct_label.setText(f'{pct_clamped:.2f}%'.replace('.', ','))
+
+        if message:
+            # If message starts with Loading ESTUDO..., keep clean Navisworks style
+            if message.startswith('Loading '):
+                clean_msg = message.split(' — ')[0]; self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
+            elif self._current_file:
+                self.file_label.setText(f'Loading {self._current_file} ...')
+            else:
+                clean_msg = message.split(' — ')[0]; self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
+
+        # Sub progress bar simulation for responsive Navisworks feel
+        sub_pct = ((pct_clamped * 3.7) % 100.0)
+        self.bar_sub.setValue(int(sub_pct * 100))
+
         QtCore.QCoreApplication.processEvents()
 
     def on_cancel(self):
@@ -126,4 +162,3 @@ class NavisLoadingDialog(W.QDialog):
 
     def is_cancelled(self) -> bool:
         return self._is_cancelled
-

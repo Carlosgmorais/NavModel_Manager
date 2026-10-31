@@ -1,6 +1,6 @@
 ; Inno Setup Script for PlantView Studio 0.0.2 Windows x64
 #define MyAppName "PlantView Studio"
-#define MyAppVersion "0.0.2"
+#define MyAppVersion "0.0.4"
 #define MyAppPublisher "Carlos Morais"
 #define MyAppURL "https://github.com/Carlosgmorais/PlantView-Studio"
 #define MyAppExeName "PlantView Studio.exe"
@@ -17,7 +17,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=release
-OutputBaseFilename=PlantView_Studio_0.0.2_Setup_x64
+OutputBaseFilename=PlantView_Studio_0.0.4_Setup_x64
 SetupIconFile=resources\plantview.ico
 WizardImageFile=resources\installer_wizard.bmp
 WizardSmallImageFile=resources\installer_banner.bmp

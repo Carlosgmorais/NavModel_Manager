@@ -1,1 +1,2 @@
-"""PlantView Studio 0.1.0."""
+"""PlantView Studio 0.0.4."""
+__version__ = '0.0.4'

@@ -13,7 +13,7 @@ ACI_TABLE: Dict[int, Tuple[int, int, int]] = {
     4: (0, 255, 255),     # Cyan
     5: (0, 0, 255),       # Blue
     6: (255, 0, 255),     # Magenta
-    7: (230, 235, 240),   # White / Gray for viewport
+    7: (215, 220, 225),   # Standard neutral viewport light slate gray (never blinding white)
     8: (128, 128, 128),   # Dark gray
     9: (192, 192, 192),   # Light gray
     10: (255, 0, 0), 11: (255, 127, 127), 12: (204, 0, 0), 13: (204, 102, 102),
@@ -77,44 +77,109 @@ ACI_TABLE: Dict[int, Tuple[int, int, int]] = {
     242: (204, 0, 51), 243: (204, 102, 127), 244: (153, 0, 38), 245: (153, 76, 95),
     246: (127, 0, 31), 247: (127, 63, 79), 248: (76, 0, 19), 249: (76, 38, 47),
     250: (51, 51, 51), 251: (91, 91, 91), 252: (132, 132, 132), 253: (173, 173, 173),
-    254: (214, 214, 214), 255: (255, 255, 255)
+    254: (214, 214, 214), 255: (220, 224, 228)
 }
 
 # Standard Engineering / Plant 3D Layer Palette
 STANDARD_LAYER_COLORS = {
     '0': (215, 220, 225),
     'DEFPOINTS': (130, 135, 140),
-    'EQUIP': (50, 160, 220),         # Equipment (Cyan/Blue)
-    'EQUIPMENT': (50, 160, 220),
-    'PIPE': (60, 190, 80),            # Piping (Green)
-    'PIPING': (60, 190, 80),
-    'TUB': (60, 190, 80),
-    'TUBULACAO': (60, 190, 80),
-    'VALVE': (235, 80, 50),           # Valves (Red/Orange)
-    'VALV': (235, 80, 50),
-    'VALVULAS': (235, 80, 50),
-    'STEEL': (110, 135, 165),         # Structural Steel (Steel Blue)
-    'STR': (110, 135, 165),
-    'ESTRUTURA': (110, 135, 165),
-    'PERFIL': (110, 135, 165),
+    # Earthwork, Civil & Topography
+    'TERRA': (168, 138, 98),
+    'TERRENO': (168, 138, 98),
+    'TERRAPLANAGEM': (176, 145, 102),
+    'ESTUDO': (176, 145, 102),
+    'VIZINHO': (185, 155, 115),
+    'TOPOGRAFIA': (135, 155, 110),
+    'TALUDE': (155, 125, 85),
+    'CURVAS': (145, 130, 95),
+    'NIVEL': (145, 130, 95),
     'CIVIL': (180, 175, 165),         # Concrete / Civil (Warm Gray)
     'CONC': (180, 175, 165),
+    'CONCRETO': (180, 175, 165),
     'BASE': (180, 175, 165),
     'FOUNDATION': (180, 175, 165),
-    'ELEC': (240, 185, 30),           # Electrical / Trays (Yellow/Gold)
+    'FUNDACAO': (180, 175, 165),
+    'PISO': (175, 170, 160),
+    'ALVENARIA': (200, 160, 140),
+    # Equipment
+    'EQUIP': (40, 145, 215),          # Equipment (Cyan/Blue)
+    'EQUIPMENT': (40, 145, 215),
+    'EQUIPAMENTO': (40, 145, 215),
+    'TANQUE': (40, 145, 215),          # Tanks (Blue)
+    'VESSEL': (40, 145, 215),
+    'TANK': (40, 145, 215),
+    'VASO': (40, 145, 215),
+    'BOMBA': (225, 115, 35),           # Pumps (Amber/Orange)
+    'PUMP': (225, 115, 35),
+    'COMPRESSOR': (215, 105, 30),
+    'TROCADOR': (35, 175, 165),        # Heat Exchanger (Teal)
+    'COOLER': (35, 175, 165),
+    'CALDEIRA': (190, 75, 60),
+    # Piping & Valves
+    'PIPE': (48, 175, 78),             # Piping (Green)
+    'PIPING': (48, 175, 78),
+    'TUB': (48, 175, 78),
+    'TUBO': (48, 175, 78),
+    'TUBULACAO': (48, 175, 78),
+    'SPOOL': (48, 175, 78),
+    'VALVE': (228, 65, 45),            # Valves (Red/Orange)
+    'VALV': (228, 65, 45),
+    'VALVULA': (228, 65, 45),
+    'VALVULAS': (228, 65, 45),
+    'FLANGE': (165, 175, 185),         # Flanges (Metallic light gray)
+    'CONEXAO': (65, 160, 95),
+    'FITTING': (65, 160, 95),
+    'CURVA': (55, 165, 85),
+    'REDUCAO': (65, 160, 95),
+    'TEE': (65, 160, 95),
+    'SUPP': (220, 130, 40),            # Pipe supports (Orange)
+    'SUPORTE': (220, 130, 40),
+    'SUPPORT': (220, 130, 40),
+    'HANG': (220, 130, 40),
+    # Structural Steel
+    'STEEL': (100, 130, 165),          # Structural Steel (Steel Blue)
+    'STR': (100, 130, 165),
+    'ESTRUTURA': (100, 130, 165),
+    'ESTRUTURAL': (100, 130, 165),
+    'PERFIL': (100, 130, 165),
+    'VIGA': (100, 130, 165),
+    'BEAM': (100, 130, 165),
+    'PILAR': (90, 120, 155),
+    'COLUMN': (90, 120, 155),
+    'CONTRAVENTAMENTO': (110, 140, 175),
+    'BRACE': (110, 140, 175),
+    'BRACING': (110, 140, 175),
+    'CHAPA': (125, 140, 155),
+    'PLATE': (125, 140, 155),
+    'ESCADA': (130, 145, 160),
+    'STAIR': (130, 145, 160),
+    'GUARDACORPO': (210, 175, 45),     # Handrails (Safety Yellow)
+    'CORRIMAO': (210, 175, 45),
+    'HANDRAIL': (210, 175, 45),
+    'GRADE': (140, 150, 160),
+    # Electrical & Instrumentation
+    'ELEC': (240, 185, 30),            # Electrical / Trays (Yellow/Gold)
+    'ELETRICA': (240, 185, 30),
     'ELECTRICAL': (240, 185, 30),
     'LEITO': (240, 185, 30),
-    'INSTR': (210, 75, 180),          # Instrumentation (Magenta/Purple)
-    'INSTRUMENTATION': (210, 75, 180),
-    'SUPP': (215, 130, 45),           # Pipe supports (Orange)
-    'SUPORTE': (215, 130, 45),
-    'FLANGE': (160, 170, 180),        # Flanges (Metallic light gray)
-    'CONEXAO': (75, 170, 110),
-    'TANQUE': (65, 145, 215),         # Tanks (Blue)
-    'VESSEL': (65, 145, 215),
-    'BOMBA': (220, 110, 40),          # Pumps (Amber/Orange)
-    'PUMP': (220, 110, 40),
-    'TROCADOR': (40, 180, 170),       # Heat Exchanger (Teal)
+    'BANDEJA': (240, 185, 30),
+    'TRAY': (240, 185, 30),
+    'CABO': (215, 160, 25),
+    'INSTR': (205, 70, 175),           # Instrumentation (Magenta/Purple)
+    'INSTRUMENTO': (205, 70, 175),
+    'INSTRUMENTATION': (205, 70, 175),
+    # Utilities
+    'DRENAGEM': (55, 145, 195),
+    'DRAIN': (55, 145, 195),
+    'AGUA': (65, 155, 225),
+    'WATER': (65, 155, 225),
+    'ESGOTO': (135, 105, 75),
+    'AR': (130, 180, 220),
+    'AIR': (130, 180, 220),
+    'GAS': (235, 190, 45),
+    'INCENDIO': (225, 45, 45),
+    'FIRE': (225, 45, 45),
 }
 
 # Standard IFC Class to Color
@@ -213,4 +278,3 @@ class LayerManager:
         clean = layer_name.strip() or '0'
         if clean in self.layers:
             self.layers[clean]['visible'] = visible
-

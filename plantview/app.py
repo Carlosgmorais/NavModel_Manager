@@ -202,7 +202,7 @@ class Window(W.QMainWindow):
         self.statusBar().showMessage(
             'Pronto | Olhar: Botão esquerdo • Pan: Botão meio • Orbit: Shift + Botão meio • Zoom: Scroll • F5: Atualizar • Ctrl+Z: Desfazer câmera'
         )
-        self.log.appendPlainText('PlantView Studio 2026 v0.0.2 iniciado com renderização OpenGL acelerada por GPU.')
+        self.log.appendPlainText('PlantView Studio 2026 v0.0.4 iniciado com renderização OpenGL acelerada por GPU.')
 
     def on_camera_changed(self, camera):
         """Update floating coordinate badges whenever camera moves."""
@@ -342,7 +342,7 @@ class Window(W.QMainWindow):
             self.loading_dialog.show()
 
         self.loading_dialog.set_file_name(file_name)
-        self.loading_dialog.set_progress(5.0, f'Lendo {file_name}...')
+        self.loading_dialog.set_progress(0.0, f'Loading {file_name} ...')
         self.log.appendPlainText(f'\nImportando: {record["path"]}')
 
         self.worker = ImportWorker(record)
@@ -382,6 +382,34 @@ class Window(W.QMainWindow):
             self.on_import_failed(str(error))
         finally:
             self.tree.blockSignals(False)
+
+    def reset_camera_navisworks(self):
+        """Frame model in realistic 3D perspective with strict Z-Up upright horizon."""
+        bounds = self.plot.bounds
+        if not bounds or bounds[0] > bounds[1]:
+            self.plot.reset_camera()
+            return
+        cx = (bounds[0] + bounds[1]) / 2.0
+        cy = (bounds[2] + bounds[3]) / 2.0
+        cz = (bounds[4] + bounds[5]) / 2.0
+        dx = bounds[1] - bounds[0]
+        dy = bounds[3] - bounds[2]
+        dz = bounds[5] - bounds[4]
+        diag = max(math.sqrt(dx*dx + dy*dy + dz*dz), 1.0)
+        camera, renderer = self.navigation.camera()
+        if camera:
+            camera.ParallelProjectionOff()
+            camera.SetViewAngle(50.0)
+            camera.SetViewUp(0.0, 0.0, 1.0)
+            camera.SetFocalPoint(cx, cy, cz)
+            camera.SetPosition(
+                cx - 1.25 * diag,
+                cy - 1.25 * diag,
+                cz + 0.75 * diag
+            )
+            if renderer:
+                renderer.ResetCameraClippingRange()
+        self.plot.render()
 
     def _add_result(self, record, parts, warnings):
         previous = record.pop('_replace', None)
@@ -447,7 +475,7 @@ class Window(W.QMainWindow):
         self.plot.remove_actor('welcome')
 
         if previous is None and record['visible']:
-            self.plot.reset_camera()
+            self.reset_camera_navisworks()
 
         self.dirty = True
         self.log.appendPlainText(f'Carregado: {len(parts)} peça(s) com cores preservadas.')

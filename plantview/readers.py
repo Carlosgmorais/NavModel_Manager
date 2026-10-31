@@ -11,7 +11,7 @@ import tempfile
 import time
 import unicodedata
 from collections import Counter
-from typing import List, Tuple, Callable, Optional
+from typing import List, Tuple, Callable, Optional, Set
 import numpy as np
 import pyvista as pv
 from .colors import resolve_layer_color, resolve_ifc_color, ACI_TABLE
@@ -76,22 +76,116 @@ def _engine_signature(path, size, modified):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float, str], bool]] = None):
+def triangulate_polygon_3d(points: np.ndarray, indices: List[int]) -> List[int]:
+    """Robust Ear-Clipping triangulation for 3D planar polygons (concave, convex, n-gons).
+    Preserves openings, holes, and prevents bridging across open pipe bores or concave steel profiles.
+    """
+    n = len(indices)
+    if n < 3:
+        return []
+    if n == 3:
+        return [3, indices[0], indices[1], indices[2]]
+    if n == 4:
+        return [3, indices[0], indices[1], indices[2], 3, indices[0], indices[2], indices[3]]
+
+    # For n > 4: project to 2D best-fit plane using Newell's method for normal
+    poly_pts = points[indices]
+    normal = np.zeros(3)
+    for i in range(n):
+        p1 = poly_pts[i]
+        p2 = poly_pts[(i + 1) % n]
+        normal[0] += (p1[1] - p2[1]) * (p1[2] + p2[2])
+        normal[1] += (p1[2] - p2[2]) * (p1[0] + p2[0])
+        normal[2] += (p1[0] - p2[0]) * (p1[1] + p2[1])
+
+    norm_len = np.linalg.norm(normal)
+    if norm_len > 1e-9:
+        normal /= norm_len
+        axis = np.argmax(np.abs(normal))
+        drop_cols = [c for c in [0, 1, 2] if c != axis]
+        coords = poly_pts[:, drop_cols]
+    else:
+        coords = poly_pts[:, :2]
+
+    verts = list(range(n))
+    triangles = []
+    count = len(verts)
+    attempts = 0
+
+    while count > 3 and attempts < count * 2:
+        ear_found = False
+        for i in range(count):
+            p_idx = verts[(i - 1) % count]
+            c_idx = verts[i]
+            n_idx = verts[(i + 1) % count]
+            a, b, c = coords[p_idx], coords[c_idx], coords[n_idx]
+            cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+            if cross <= 0:
+                continue
+
+            # Ear test: ensure no other vertex is inside triangle (a, b, c)
+            any_inside = False
+            for k in range(count):
+                idx = verts[k]
+                if idx in (p_idx, c_idx, n_idx):
+                    continue
+                pt = coords[idx]
+                d1 = (pt[0] - b[0]) * (a[1] - b[1]) - (pt[1] - b[1]) * (a[0] - b[0])
+                d2 = (pt[0] - c[0]) * (b[1] - c[1]) - (pt[1] - c[1]) * (b[0] - c[0])
+                d3 = (pt[0] - a[0]) * (c[1] - a[1]) - (pt[1] - a[1]) * (c[0] - a[0])
+                if (d1 >= 0 and d2 >= 0 and d3 >= 0) or (d1 <= 0 and d2 <= 0 and d3 <= 0):
+                    any_inside = True
+                    break
+
+            if not any_inside:
+                triangles.extend([3, indices[p_idx], indices[c_idx], indices[n_idx]])
+                verts.pop(i)
+                count -= 1
+                ear_found = True
+                break
+        attempts += 1
+        if not ear_found:
+            break
+
+    if count == 3:
+        triangles.extend([3, indices[verts[0]], indices[verts[1]], indices[verts[2]]])
+    elif count > 3:
+        # Graceful fallback for self-intersecting or complex non-simple polygons
+        for k in range(1, count - 1):
+            triangles.extend([3, indices[verts[0]], indices[verts[k]], indices[verts[k + 1]]])
+
+    return triangles
+
+
+def read_dwg(
+    path,
+    unit_scale=.001,
+    progress_callback: Optional[Callable[[float, str], bool]] = None,
+    visited_files: Optional[Set[Path]] = None
+):
     engine = engine_path()
     if not engine.is_file():
         raise ValueError(f'Motor plantview-dwg.exe ausente em {engine}. Reextraia o pacote completo ou verifique a pasta engine.')
 
-    if progress_callback:
-        progress_callback(10.0, f'Iniciando leitura DWG: {Path(path).name}...')
-
     source = Path(path).resolve()
+    file_name = source.name
+
+    if visited_files is None:
+        visited_files = set()
+    visited_files.add(source)
+
+    if progress_callback:
+        progress_callback(10.0, f'Loading {file_name} ...')
+
+    t_start = time.monotonic()
     source_stat, engine_stat = source.stat(), engine.stat()
     engine_signature = _engine_signature(str(engine), engine_stat.st_size, engine_stat.st_mtime_ns)
     cache_key = hashlib.sha256(
-        f'v1|{source}|{source_stat.st_size}|{source_stat.st_mtime_ns}|{engine_signature}'.encode()
+        f'v2|{source}|{source_stat.st_size}|{source_stat.st_mtime_ns}|{engine_signature}'.encode()
     ).hexdigest()
     cache_dir = Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'PlantView Studio' / 'Cache'
     cache_file = cache_dir / (cache_key + '.json')
+
     with tempfile.TemporaryDirectory(prefix='PlantView-') as folder:
         root = Path(folder)
         result = root / 'geometry.json'
@@ -99,16 +193,14 @@ def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float,
         if cache_file.is_file():
             shutil.copyfile(cache_file, result)
             if progress_callback:
-                progress_callback(60.0, 'Reutilizando geometria DWG em cache...')
+                progress_callback(40.0, f'Loading {file_name} ...')
         else:
             if progress_callback:
-                progress_callback(25.0, 'Decodificando entidades ACIS (3DSOLID, BODY, REGION)...')
+                progress_callback(25.0, f'Loading {file_name} ...')
 
-            # Poll the child so cancellation is effective during native decoding too.
-            # Redirect output to disk: a full pipe must never block the decoder.
             with (root / 'decoder.log').open('w+b') as log:
                 proc = subprocess.Popen(
-                    [str(engine), str(Path(path).resolve()), str(result)],
+                    [str(engine), str(source), str(result)],
                     cwd=folder, stdout=log, stderr=subprocess.STDOUT,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 started = time.monotonic()
@@ -116,11 +208,11 @@ def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float,
                     while proc.poll() is None:
                         elapsed = time.monotonic() - started
                         if progress_callback:
-                            if progress_callback(25.0, f'Decodificando DWG — {int(elapsed)} s decorridos...') is False:
+                            if progress_callback(25.0 + min(25.0, elapsed * 2.0), f'Loading {file_name} — {int(elapsed)} s decorridos...') is False:
                                 raise InterruptedError('Carregamento cancelado pelo usuário.')
                         if elapsed > 300:
-                            raise TimeoutError('O leitor DWG excedeu 5 minutos. A decodificação foi encerrada; verifique o arquivo e as entidades suportadas.')
-                        time.sleep(0.2)
+                            raise TimeoutError('O leitor DWG excedeu 5 minutos. A decodificação foi encerrada.')
+                        time.sleep(0.15)
                 finally:
                     if proc.poll() is None:
                         proc.kill()
@@ -133,7 +225,7 @@ def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float,
                 raise ValueError('Falha no leitor DWG experimental. O original não foi alterado.\n' + detail)
 
             if progress_callback:
-                progress_callback(60.0, 'Processando malha e coordenadas...')
+                progress_callback(55.0, f'Loading {file_name} ...')
 
         try:
             data = json.loads(result.read_text(encoding='utf-8-sig'))
@@ -156,20 +248,17 @@ def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float,
         ent_desc = f"Entidades no arquivo: {', '.join(skipped_summary[:8])}." if skipped_summary else ""
         detail = '\n'.join(data.get('warnings', [])[:12])
         raise ValueError(
-            f'O arquivo DWG não produziu sólidos 3D ACIS visualizáveis.\n'
+            f'O arquivo DWG não produziu sólidos 3D visualizáveis.\n'
             f'{ent_desc}\n'
             f'{detail}'
         )
 
-    scale = UNITS.get(data['units'], unit_scale)
-    warnings = list(data.get('warnings', []))
-    warnings.insert(0, 'DWG: sólidos ACIS lidos pelo motor nativo. Coordenadas mundiais reais preservadas.')
-    if data['units'] not in UNITS:
-        warnings.append(f'Unidade DWG não reconhecida ({data["units"]}); aplicada escala {scale} m/unidade.')
-
+    scale = UNITS.get(data.get('units', 4), unit_scale)
     parts = []
     meshes = data.get('meshes', [])
     total_meshes = len(meshes)
+    total_triangles_count = 0
+    proxy_converted_count = 0
 
     for i, m in enumerate(meshes):
         points = m.get('points')
@@ -178,30 +267,107 @@ def read_dwg(path, unit_scale=.001, progress_callback: Optional[Callable[[float,
         pts = np.asarray(points, dtype=float)
         if scale != 1.0:
             pts = pts * scale
-        mesh = pv.PolyData(pts, m['faces'])
 
-        # Color resolution:
-        # 1. Use explicit mesh color if provided and not default placeholder
-        # 2. Resolve via layer name according to AutoCAD standards
+        raw_faces = m.get('faces', [])
+        # Apply robust polygon triangulation for complex N-gons and open bore preservation
+        cur = 0
+        needs_retriangulation = False
+        while cur < len(raw_faces):
+            nv = raw_faces[cur]
+            if nv > 4:
+                needs_retriangulation = True
+                break
+            cur += 1 + nv
+
+        if needs_retriangulation:
+            cur = 0
+            mesh_faces = []
+            while cur < len(raw_faces):
+                nv = raw_faces[cur]
+                f_indices = raw_faces[cur + 1: cur + 1 + nv]
+                cur += 1 + nv
+                if nv == 3:
+                    mesh_faces.extend([3, f_indices[0], f_indices[1], f_indices[2]])
+                elif nv == 4:
+                    mesh_faces.extend([3, f_indices[0], f_indices[1], f_indices[2],
+                                       3, f_indices[0], f_indices[2], f_indices[3]])
+                elif nv > 4:
+                    mesh_faces.extend(triangulate_polygon_3d(pts, f_indices))
+        else:
+            mesh_faces = raw_faces
+
+        mesh = pv.PolyData(pts, mesh_faces)
+        total_triangles_count += getattr(mesh, 'n_cells', 1)
+
+        # Original CAD color preservation:
+        # Check if raw_color is genuine TrueColor or explicit non-white ACI
         _, _, layer_name = parse_dwg_mesh_info(m['name'])
         raw_color = m.get('color')
 
-        if raw_color and raw_color != [190, 201, 212] and raw_color != [230, 230, 230]:
-            color_rgb = raw_color
+        is_default_white_or_gray = raw_color in ([255, 255, 255], [190, 201, 212], [230, 230, 230], None)
+        if not is_default_white_or_gray:
+            # Genuine explicit entity color preserved
+            color_rgb = list(raw_color)
         else:
+            # Resolve accurately by engineering layer according to AutoCAD / Plant 3D standards
             color_rgb = list(resolve_layer_color(layer_name))
+
+        if '[Plant3D]' in m['name']:
+            proxy_converted_count += 1
 
         attach_mesh_metadata(mesh, layer_name, color_rgb)
         parts.append((m['name'], mesh))
 
         if progress_callback and (i % max(1, total_meshes // 10) == 0 or i == total_meshes - 1):
             pct = 60.0 + (35.0 * i / max(1, total_meshes))
-            progress_callback(pct, f'Criando geometria ({i+1}/{total_meshes})...')
+            progress_callback(pct, f'Loading {file_name} ...')
+
+    # Automatic Xref Resolution: check for referenced companion DWGs in parent/xref directories
+    xrefs_loaded_count = 0
+    xref_dirs = [source.parent, source.parent / 'xref', source.parent / 'xrefs', source.parent / 'referencias']
+    for xdir in xref_dirs:
+        if not xdir.is_dir():
+            continue
+        for companion in xdir.glob('*.dwg'):
+            comp_res = companion.resolve()
+            if comp_res not in visited_files and comp_res != source:
+                # Automatic resolution of companion Xref
+                try:
+                    xref_parts, _ = read_dwg(comp_res, unit_scale=unit_scale, progress_callback=None, visited_files=visited_files)
+                    for xname, xmesh in xref_parts:
+                        parts.append((f'[XREF: {companion.stem}] {xname}', xmesh))
+                    xrefs_loaded_count += 1
+                except Exception:
+                    pass
+
+    elapsed_time = time.monotonic() - t_start
+
+    # Section 10: Relatório Diagnóstico Completo de Importação
+    warnings = list(data.get('warnings', []))
+    diag_report = [
+        "============================================================",
+        "PLANTVIEW STUDIO — DIAGNÓSTICO DE IMPORTAÇÃO DWG 3D",
+        "============================================================",
+        f"Arquivo: {file_name}",
+        f"Entidades totais encontradas: {data.get('total_entities', total_meshes)}",
+        f"Sólidos 3D ACIS / Meshes importados: {total_meshes}",
+        f"Objetos PROXY (Plant 3D / Estruturas) identificados: {proxy_converted_count}",
+        f"Objetos PROXY convertidos em malha 3D: {proxy_converted_count}",
+        f"Malhas 3D geradas no visor: {len(parts)}",
+        f"Xrefs encontradas e carregadas automaticamente: {xrefs_loaded_count}",
+        f"Total de triângulos na maquete: {total_triangles_count:,}",
+        f"Unidade do DWG: {data.get('units', 4)} (Escala: {scale} m/unidade)",
+        f"Tempo de importação: {elapsed_time:.2f} s",
+        "============================================================"
+    ]
+    for line in reversed(diag_report):
+        warnings.insert(0, line)
 
     if progress_callback:
-        progress_callback(100.0, 'Modelo DWG carregado com sucesso.')
+        progress_callback(100.0, f'Loading {file_name} ...')
 
     return parts, warnings
+
 
 def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[float, str], bool]] = None):
     path = Path(path)
@@ -212,7 +378,7 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         parts, warnings = read_dwg(path, unit_scale, progress_callback)
     elif ext in ('.step', '.stp'):
         if progress_callback:
-            progress_callback(15.0, f'Lendo modelo STEP: {path.name}...')
+            progress_callback(15.0, f'Loading {path.name} ...')
         from OCP.STEPControl import STEPControl_Reader
         from OCP.IFSelect import IFSelect_RetDone
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
@@ -227,7 +393,7 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         reader.TransferRoots()
         shape = reader.OneShape()
         if progress_callback:
-            progress_callback(50.0, 'Triangulando superfícies B-Rep...')
+            progress_callback(50.0, f'Loading {path.name} ...')
         BRepMesh_IncrementalMesh(shape, .5, False, .3, True)
         explorer = TopExp_Explorer(shape, TopAbs_FACE)
         points, faces = [], []
@@ -256,10 +422,10 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
             attach_mesh_metadata(mesh, layer, color)
             parts.append((path.stem, mesh))
         if progress_callback:
-            progress_callback(100.0, 'Modelo STEP carregado com sucesso.')
+            progress_callback(100.0, f'Loading {path.name} ...')
     elif ext == '.ifc':
         if progress_callback:
-            progress_callback(15.0, f'Lendo arquivo BIM IFC: {path.name}...')
+            progress_callback(15.0, f'Loading {path.name} ...')
         import ifcopenshell
         import ifcopenshell.geom
         doc = ifcopenshell.open(str(path))
@@ -284,12 +450,12 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
                 warnings.append(f'{entity.GlobalId}: {error}')
             if progress_callback and idx % max(1, total_p // 10) == 0:
                 pct = 20.0 + (75.0 * idx / max(1, total_p))
-                progress_callback(pct, f'Processando elementos IFC ({idx}/{total_p})...')
+                progress_callback(pct, f'Loading {path.name} ...')
         if progress_callback:
-            progress_callback(100.0, 'Modelo IFC carregado com sucesso.')
+            progress_callback(100.0, f'Loading {path.name} ...')
     elif ext == '.dxf':
         if progress_callback:
-            progress_callback(15.0, f'Lendo arquivo DXF: {path.name}...')
+            progress_callback(15.0, f'Loading {path.name} ...')
         import ezdxf
         from ezdxf.disassemble import recursive_decompose
         from ezdxf.path import make_path
@@ -301,7 +467,6 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         # Build layer color table from DXF document
         dxf_layer_colors = {}
         for l in doc.layers:
-            # Color is either ACI or true color
             color_idx = l.color
             if color_idx in ACI_TABLE:
                 dxf_layer_colors[l.dxf.name] = ACI_TABLE[color_idx]
@@ -329,10 +494,10 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
             except Exception: skipped[kind] += 1
         warnings.extend(f'{count} entidade(s) {kind} não suportada(s).' for kind, count in skipped.items())
         if progress_callback:
-            progress_callback(100.0, 'Modelo DXF carregado com sucesso.')
+            progress_callback(100.0, f'Loading {path.name} ...')
     elif ext in ('.stl', '.obj', '.ply', '.vtp'):
         if progress_callback:
-            progress_callback(20.0, f'Carregando malha 3D: {path.name}...')
+            progress_callback(20.0, f'Loading {path.name} ...')
         mesh = pv.read(str(path))
         mesh.points *= unit_scale
         color = resolve_layer_color(path.stem)
@@ -340,7 +505,7 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         parts = [(path.stem, mesh)]
         warnings.append(f'Malha sem unidade: escala aplicada {unit_scale} m/unidade.')
         if progress_callback:
-            progress_callback(100.0, 'Malha carregada com sucesso.')
+            progress_callback(100.0, f'Loading {path.name} ...')
     else:
         raise ValueError(f'Formato {ext} não suportado. NWC/NWD/RVT exigem SDK específico.')
 

@@ -26,6 +26,7 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         self.camera_history = []
         self._pre_movement_state = None
         self.on_shift_pick = None
+        self._move_count = 0
         
         # Event observers
         self.AddObserver('LeftButtonPressEvent', self.left_down)
@@ -157,7 +158,7 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
     def right_down(self, obj, event):
         interactor = self.GetInteractor()
         self.previous = interactor.GetEventPosition()
-        self.drag_mode = 'look'
+        self.drag_mode = 'orbit' if interactor.GetShiftKey() else 'look'
         self._record_pre_movement()
         if interactor and interactor.GetRenderWindow():
             interactor.GetRenderWindow().SetDesiredUpdateRate(30.0)
@@ -165,11 +166,15 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
     def mouse_up(self, obj, event):
         self.drag_mode = None
         self.previous = None
+        self._move_count = 0
         self._commit_pre_movement()
         interactor = self.GetInteractor()
         if interactor and interactor.GetRenderWindow():
             interactor.GetRenderWindow().SetCurrentCursor(0)
             interactor.GetRenderWindow().SetDesiredUpdateRate(0.001)
+            _, renderer = self.camera()
+            if renderer:
+                renderer.ResetCameraClippingRange()
             interactor.Render()
 
     def key_press(self, obj, event):
@@ -192,6 +197,8 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         camera, renderer = self.camera()
         if not camera or not renderer:
             return
+
+        self._move_count += 1
 
         # Sensitivity speed multiplier (Shift accelerates navigation)
         speed = 2.5 if interactor.GetShiftKey() else 1.0
@@ -246,7 +253,6 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             pitch = math.atan2(view_vec[2], max(horiz_dist, 1e-9))
 
             sens = 0.005 * speed
-            # Direção corrigida: arrastar para esquerda gira câmera para esquerda; direita para direita
             yaw -= dx * sens
             pitch = np.clip(pitch - dy * sens, -math.radians(88.5), math.radians(88.5))
 
@@ -292,9 +298,11 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             camera.SetPosition(*(eye + offset))
             camera.SetFocalPoint(*(focal + offset))
 
-        renderer.ResetCameraClippingRange()
+        # Do NOT call ResetCameraClippingRange on every single mouse pixel move!
+        # This was causing severe CPU lag/freezing on large models.
+        # It is now called once upon mouse_up.
         interactor.Render()
-        if self.on_change:
+        if self.on_change and (self._move_count % 3 == 0):
             self.on_change(camera)
 
     def dolly(self, direction):
