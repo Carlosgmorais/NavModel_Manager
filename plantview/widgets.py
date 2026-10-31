@@ -70,12 +70,20 @@ def setup_nav_cube(interactor):
     cube.GetZPlusFaceProperty().SetColor(0.92, 0.95, 0.98)
     cube.GetZMinusFaceProperty().SetColor(0.75, 0.80, 0.85)
 
+    # Resolve underlying vtkRenderWindowInteractor if a PyVista/Qt widget was passed
+    real_interactor = interactor
+    if hasattr(interactor, 'render_window') and interactor.render_window:
+        real_interactor = interactor.render_window.GetInteractor()
+    elif hasattr(interactor, 'GetRenderWindow') and interactor.GetRenderWindow():
+        real_interactor = interactor.GetRenderWindow().GetInteractor()
+
     marker = vtk.vtkOrientationMarkerWidget()
     marker.SetOrientationMarker(cube)
-    marker.SetInteractor(interactor)
-    marker.SetViewport(0.82, 0.77, 0.99, 0.99)
-    marker.SetEnabled(1)
-    marker.InteractiveOff()
+    if real_interactor is not None and isinstance(real_interactor, vtk.vtkRenderWindowInteractor):
+        marker.SetInteractor(real_interactor)
+        marker.SetViewport(0.82, 0.77, 0.99, 0.99)
+        marker.SetEnabled(1)
+        marker.InteractiveOff()
     return marker, cube
 
 
