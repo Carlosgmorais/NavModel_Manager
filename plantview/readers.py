@@ -269,34 +269,13 @@ def read_dwg(
             pts = pts * scale
 
         raw_faces = m.get('faces', [])
-        # Apply robust polygon triangulation for complex N-gons and open bore preservation
-        cur = 0
-        needs_retriangulation = False
-        while cur < len(raw_faces):
-            nv = raw_faces[cur]
-            if nv > 4:
-                needs_retriangulation = True
-                break
-            cur += 1 + nv
-
-        if needs_retriangulation:
-            cur = 0
-            mesh_faces = []
-            while cur < len(raw_faces):
-                nv = raw_faces[cur]
-                f_indices = raw_faces[cur + 1: cur + 1 + nv]
-                cur += 1 + nv
-                if nv == 3:
-                    mesh_faces.extend([3, f_indices[0], f_indices[1], f_indices[2]])
-                elif nv == 4:
-                    mesh_faces.extend([3, f_indices[0], f_indices[1], f_indices[2],
-                                       3, f_indices[0], f_indices[2], f_indices[3]])
-                elif nv > 4:
-                    mesh_faces.extend(triangulate_polygon_3d(pts, f_indices))
-        else:
-            mesh_faces = raw_faces
-
-        mesh = pv.PolyData(pts, mesh_faces)
+        mesh = pv.PolyData(pts, raw_faces)
+        # Fast C++ hardware-accelerated triangulation for complex N-gons and cutouts
+        try:
+            if len(raw_faces) > 0 and raw_faces[0] > 4:
+                mesh = mesh.triangulate()
+        except Exception:
+            pass
         total_triangles_count += getattr(mesh, 'n_cells', 1)
 
         # Original CAD color preservation:
@@ -322,23 +301,23 @@ def read_dwg(
             pct = 60.0 + (35.0 * i / max(1, total_meshes))
             progress_callback(pct, f'Loading {file_name} ...')
 
-    # Automatic Xref Resolution: check for referenced companion DWGs in parent/xref directories
+    # Explicit Xref Resolution: only load external references explicitly requested by the DWG model
     xrefs_loaded_count = 0
-    xref_dirs = [source.parent, source.parent / 'xref', source.parent / 'xrefs', source.parent / 'referencias']
-    for xdir in xref_dirs:
-        if not xdir.is_dir():
-            continue
-        for companion in xdir.glob('*.dwg'):
-            comp_res = companion.resolve()
-            if comp_res not in visited_files and comp_res != source:
-                # Automatic resolution of companion Xref
-                try:
-                    xref_parts, _ = read_dwg(comp_res, unit_scale=unit_scale, progress_callback=None, visited_files=visited_files)
-                    for xname, xmesh in xref_parts:
-                        parts.append((f'[XREF: {companion.stem}] {xname}', xmesh))
-                    xrefs_loaded_count += 1
-                except Exception:
-                    pass
+    explicit_xrefs = data.get('xrefs', [])
+    if explicit_xrefs:
+        xref_dirs = [source.parent, source.parent / 'xref', source.parent / 'xrefs', source.parent / 'referencias']
+        for xref_name in explicit_xrefs:
+            for xdir in xref_dirs:
+                cand = (xdir / xref_name).resolve()
+                if cand.is_file() and cand not in visited_files and cand != source:
+                    try:
+                        xref_parts, _ = read_dwg(cand, unit_scale=unit_scale, progress_callback=None, visited_files=visited_files)
+                        for xname, xmesh in xref_parts:
+                            parts.append((f'[XREF: {cand.stem}] {xname}', xmesh))
+                        xrefs_loaded_count += 1
+                        break
+                    except Exception:
+                        pass
 
     elapsed_time = time.monotonic() - t_start
 

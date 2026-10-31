@@ -143,15 +143,20 @@ class NavisLoadingDialog(W.QDialog):
         if message:
             # If message starts with Loading ESTUDO..., keep clean Navisworks style
             if message.startswith('Loading '):
-                clean_msg = message.split(' — ')[0]; self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
+                clean_msg = message.split(' — ')[0]
+                self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
             elif self._current_file:
                 self.file_label.setText(f'Loading {self._current_file} ...')
             else:
-                clean_msg = message.split(' — ')[0]; self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
+                clean_msg = message.split(' — ')[0]
+                self.file_label.setText(clean_msg if clean_msg.endswith('...') else clean_msg + ' ...')
 
         # Sub progress bar simulation for responsive Navisworks feel
-        sub_pct = ((pct_clamped * 3.7) % 100.0)
-        self.bar_sub.setValue(int(sub_pct * 100))
+        if pct_clamped >= 100.0:
+            self.bar_sub.setValue(10000)
+        else:
+            sub_pct = ((pct_clamped * 3.7) % 100.0)
+            self.bar_sub.setValue(int(sub_pct * 100))
 
         QtCore.QCoreApplication.processEvents()
 

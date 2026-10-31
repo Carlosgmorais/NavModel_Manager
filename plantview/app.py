@@ -324,7 +324,12 @@ class Window(W.QMainWindow):
     def next_import(self):
         if not self.queue:
             if self.loading_dialog:
-                self.loading_dialog.accept()
+                try:
+                    self.loading_dialog.set_progress(100.0, 'Concluído')
+                    self.loading_dialog.accept()
+                    self.loading_dialog.close()
+                except Exception:
+                    pass
                 self.loading_dialog = None
             if self.restore_camera:
                 self.plot.camera_position = self.restore_camera
@@ -363,6 +368,13 @@ class Window(W.QMainWindow):
             self.queue.clear()
 
     def on_import_failed(self, error_msg: str):
+        if self.loading_dialog:
+            try:
+                self.loading_dialog.reject()
+                self.loading_dialog.close()
+            except Exception:
+                pass
+            self.loading_dialog = None
         self.log.appendPlainText(f'AVISO: Falha ao carregar/atualizar arquivo: {error_msg}. A geometria anterior foi mantida.')
         self.statusBar().showMessage('Erro de leitura no arquivo; modelo anterior conservado intacto.')
 
@@ -377,7 +389,11 @@ class Window(W.QMainWindow):
         try:
             if not parts:
                 raise ValueError('Nenhuma geometria visualizável encontrada no arquivo.')
+            if self.loading_dialog:
+                self.loading_dialog.set_progress(98.0, f'Loading {Path(record["path"]).name} ...')
             self._add_result(record, parts, warnings)
+            if self.loading_dialog:
+                self.loading_dialog.set_progress(100.0, f'Loading {Path(record["path"]).name} ...')
         except Exception as error:
             self.on_import_failed(str(error))
         finally:

@@ -49,10 +49,6 @@ def optimize_actor(actor):
     if hasattr(prop, 'SetDiffuse'): prop.SetDiffuse(0.68)
     if hasattr(prop, 'SetSpecular'): prop.SetSpecular(0.18)
     if hasattr(prop, 'SetSpecularPower'): prop.SetSpecularPower(25.0)
-    prop.SetAmbient(0.28)
-    prop.SetDiffuse(0.68)
-    prop.SetSpecular(0.18)
-    prop.SetSpecularPower(25.0)
     return actor
 
 
@@ -88,10 +84,6 @@ def make_instance_actor(plot, source, origins, color):
     prop.SetColor(*color)
     prop.SetInterpolationToFlat()
     prop.SetEdgeVisibility(False)
-    prop.SetAmbient(0.28)
-    prop.SetDiffuse(0.68)
-    prop.SetSpecular(0.18)
-    prop.SetSpecularPower(25.0)
     plot.add_actor(actor, reset_camera=False, render=False)
     return actor
 
