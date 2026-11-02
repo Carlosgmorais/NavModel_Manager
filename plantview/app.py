@@ -67,7 +67,7 @@ class ImportWorker(QtCore.QThread):
 class Window(W.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('NavModel Manager')
+        self.setWindowTitle('Novo modelo — NavModel Manager')
         self.setWindowIcon(app_icon())
         self.resize(1536, 900)
         self.selection_mode = False
@@ -140,6 +140,8 @@ class Window(W.QMainWindow):
         # 3D NavCube Orientation Marker in top-right corner
         self.nav_marker, self.nav_cube = setup_nav_cube(self.plot.interactor)
         self.cube = NavigationCube(self, self.nav_marker)
+        from .measurement import MeasurementTool
+        self.measure_tool = MeasurementTool(self)
         self.coord_overlay = CoordinateHUD(self.plot)
 
         # 1. Navisworks Ribbon Bar (Created after plot is ready)
@@ -459,6 +461,7 @@ class Window(W.QMainWindow):
         index = self.models.index(previous) if previous is not None else len(self.models)
 
         record = dict(record, actors=[])
+        record['signature'] = (os.stat(record['path']).st_mtime_ns, os.stat(record['path']).st_size) if os.path.exists(record['path']) else None
         record['mtime'] = os.path.getmtime(record['path']) if os.path.exists(record['path']) else 0
 
         # Tree Node
@@ -545,6 +548,14 @@ class Window(W.QMainWindow):
         to_reload = []
         for m in self.models:
             path = m['path']
+            try:
+                stat = os.stat(path)
+                signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                self.log.appendPlainText(f'Arquivo indisponível, modelo preservado: {path}')
+                continue
+            if signature == m.get('signature'):
+                continue
             to_reload.append(dict(
                 path=m['path'],
                 visible=m['visible'],
@@ -554,7 +565,11 @@ class Window(W.QMainWindow):
             ))
 
         self.log.appendPlainText('\n[F5 REFRESH] Verificando e recarregando modelos da maquete...')
-        self.enqueue(to_reload)
+        if to_reload:
+            self.enqueue(to_reload)
+        else:
+            self.restore_camera = None
+            self.statusBar().showMessage('Nenhum arquivo alterado.')
 
     def selected_actors(self):
         actors = {}
@@ -835,29 +850,14 @@ class Window(W.QMainWindow):
 
     def toggle_measure(self):
         self.measure_mode = not self.measure_mode
-        self.measure_points = []
-        if self.measure_mode:
-            self.statusBar().showMessage('MODO MEDIR ATIVO: Clique com botão direito ou pressione P em dois pontos da maquete.')
-            self.log.appendPlainText('MEDIR: Clique ou pressione P sobre duas superfícies para calcular a distância exata em metros.')
-        else:
-            self.statusBar().showMessage('Medição desativada.')
+        self.measure_tool.start = None
+        self.statusBar().showMessage('Medir: clique no primeiro ponto, mova o cursor e clique no segundo. Esc cancela.' if self.measure_mode else 'Medição desativada.')
 
     def clear_measures(self):
-        self.plot.remove_actor('measure')
-        self.measure_points.clear()
-        self.plot.render()
+        self.measure_tool.clear()
 
     def point_picked(self, point):
-        if not self.measure_mode:
-            return
-        self.measure_points.append(np.array(point))
-        if len(self.measure_points) == 2:
-            a, b = self.measure_points
-            dist = np.linalg.norm(a - b)
-            self.plot.add_mesh(pv.Line(a, b), color='#ffcc00', line_width=4, name='measure', pickable=False, reset_camera=False)
-            self.log.appendPlainText(f'MEDIDA: Distância = {dist:.4f} m ({dist * 1000:.1f} mm) | A={a.round(4)} | B={b.round(4)}')
-            self.measure_points = []
-
+        pass  # MeasurementTool owns left-click surface picking and preview.
 
     def toggle_diagnostic_render_mode(self):
         """Alterna entre Renderização Otimizada GPU (60 FPS) e Diagnóstico Isolado (1:1 peças)."""
@@ -875,6 +875,12 @@ class Window(W.QMainWindow):
         self.log.appendPlainText('\n' + info)
         W.QMessageBox.information(self, 'NavModel Manager — Diagnóstico GPU', info)
 
+    def update_project_title(self):
+        text = (Path(self.project_path).name if self.project_path else 'Novo modelo') + ' — NavModel Manager'
+        self.setWindowTitle(text)
+        if hasattr(self.ribbon, 'project_title'):
+            self.ribbon.project_title.setText(text)
+
     def save(self):
         path, _ = W.QFileDialog.getSaveFileName(self, 'Salvar projeto federado', self.project_path or 'Maquete.pvproj', 'Projeto NavModel (*.pvproj)')
         if not path:
@@ -884,6 +890,7 @@ class Window(W.QMainWindow):
         try:
             save_project(path, self.models, [list(v) for v in self.plot.camera_position])
             self.project_path = path
+            self.update_project_title()
             self.dirty = False
             self.log.appendPlainText(f'Projeto federado salvo com sucesso em: {path}')
             return True
@@ -904,6 +911,7 @@ class Window(W.QMainWindow):
             return
         self.clear_models()
         self.project_path = path
+        self.update_project_title()
         self.restore_camera = data.get('camera')
         self.enqueue(data['models'])
 
@@ -927,6 +935,7 @@ class Window(W.QMainWindow):
         self.update_properties()
         self.total_triangles = 0
         self.project_path = None
+        self.update_project_title()
         self.dirty = False
 
     def new_project(self):

@@ -72,7 +72,7 @@ class NavisRibbonBar(W.QWidget):
             pix=b.icon().pixmap(24,24); p=QtGui.QPainter(pix); p.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn); p.fillRect(pix.rect(),QtCore.Qt.white); p.end(); b.setIcon(QtGui.QIcon(pix))
             b.clicked.connect(callback); row.addWidget(b)
         row.addStretch()
-        title = W.QLabel('NavModel Manager'); title.setStyleSheet('font-size:14px; font-weight:600;')
+        title = W.QLabel('Novo modelo — NavModel Manager'); self.project_title = title; title.setStyleSheet('font-size:14px; font-weight:600;')
         row.addWidget(title); row.addStretch()
         main.addWidget(header)
         self.tabs = W.QTabWidget(); main.addWidget(self.tabs)
