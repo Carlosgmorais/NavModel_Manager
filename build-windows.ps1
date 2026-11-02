@@ -1,4 +1,4 @@
-# Build script for PlantView Studio 0.0.4 on Windows 11 x64
+# Build script for PlantView Studio 0.0.5 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
@@ -37,32 +37,93 @@ $pyDir = Split-Path $pyExe
 $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
 Set-Alias -Name python -Value $pyExe -Scope Global -Force
 
+# Detect Cargo (Rust compiler toolchain)
+$cargoExe = ''
+$cargoCandidates = @(
+    "$env:USERPROFILE\.cargo\bin\cargo.exe",
+    "$env:LOCALAPPDATA\.cargo\bin\cargo.exe",
+    "$env:ProgramFiles\Rust\bin\cargo.exe",
+    "C:\Users\Carlos Gomes\.cargo\bin\cargo.exe"
+)
+foreach ($cand in $cargoCandidates) {
+    if ($cand -and (Test-Path $cand)) {
+        $cargoExe = $cand
+        break
+    }
+}
+if (-not $cargoExe) {
+    $cmdCargo = Get-Command 'cargo.exe' -ErrorAction SilentlyContinue
+    if ($cmdCargo) { $cargoExe = $cmdCargo.Source }
+}
+if (-not $cargoExe) {
+    throw "Compilador Rust Cargo nao encontrado no sistema. Instale o Rustup."
+}
+
 $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  PLANTVIEW STUDIO 0.0.4 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  PLANTVIEW STUDIO 0.0.5 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
+    Write-Host "Cargo:  $cargoExe"
 
-    # Step 1: Generate icons and assets
+    # Step 1: Compile Rust DWG Engine (Mandatory Priority 1)
     Write-Host ""
-    Write-Host "[1/5] Gerando icones de alta resolucao e arte do instalador..."
+    Write-Host "[1/6] Compilando motor nativo Rust dwg-reader com Cargo (--release)..."
+    $manifestPath = Join-Path $root 'dwg-reader\Cargo.toml'
+    & $cargoExe build --release --manifest-path $manifestPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "ERRO FATAL: Falha na compilacao Rust de dwg-reader/Cargo.toml (exit code: $LASTEXITCODE)."
+    }
+
+    $builtBin = Join-Path $root 'dwg-reader\target\release\plantview-dwg.exe'
+    if (-not (Test-Path $builtBin)) {
+        throw "Binario compilado nao encontrado em: $builtBin"
+    }
+
+    $engineDir = Join-Path $root 'engine'
+    if (-not (Test-Path $engineDir)) {
+        New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
+    }
+    $targetBin = Join-Path $engineDir 'plantview-dwg.exe'
+    Copy-Item -Path $builtBin -Destination $targetBin -Force
+
+    $engineHash = (Get-FileHash $targetBin -Algorithm SHA256).Hash
+    $engineBytes = (Get-Item $targetBin).Length
+    $engineDate = (Get-Item $targetBin).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+    $engineSizeMb = [math]::Round($engineBytes / 1048576, 2)
+
+    $engineMeta = @{
+        name = "plantview-dwg"
+        version = "0.1.0"
+        built_at = $engineDate
+        sha256 = $engineHash
+        size_bytes = $engineBytes
+    } | ConvertTo-Json -Depth 2
+    Set-Content -Path (Join-Path $engineDir 'engine_info.json') -Value $engineMeta -Encoding UTF8
+
+    Write-Host "Motor nativo compilado e copiado para: $targetBin"
+    Write-Host "Tamanho: $engineSizeMb MB | SHA256: $engineHash"
+
+    # Step 2: Generate icons and assets
+    Write-Host ""
+    Write-Host "[2/6] Gerando icones de alta resolucao e arte do instalador..."
     & $pyExe scripts/generate_assets.py
     if ($LASTEXITCODE -ne 0) { throw "Falha na geracao de icones." }
 
-    # Step 2: Tests and Validation
+    # Step 3: Tests and Validation
     Write-Host ""
-    Write-Host "[2/5] Executando testes automatizados e integracao..."
+    Write-Host "[3/6] Executando testes automatizados e integracao..."
     & $pyExe -m unittest tests.test_gpu_logic_light
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de logica GPU." }
     & $pyExe tests/verify.py
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integracao CAD." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
 
-    # Step 3: PyInstaller Build
+    # Step 4: PyInstaller Build
     Write-Host ""
-    Write-Host "[3/5] Compilando executavel Windows standalone com PyInstaller..."
+    Write-Host "[4/6] Compilando executavel Windows standalone com PyInstaller..."
     & $pyExe -m PyInstaller --noconfirm --clean PlantViewStudio.spec
     if ($LASTEXITCODE -ne 0) { throw "Falha na compilacao com PyInstaller." }
 
@@ -72,21 +133,21 @@ try {
     }
     Write-Host "Executavel gerado com sucesso: $distExe"
 
-    # Step 4: Frozen Smoke Test
+    # Step 5: Frozen Smoke Test
     Write-Host ""
-    Write-Host "[4/5] Executando smoke-test no executavel compilado..."
+    Write-Host "[5/6] Executando smoke-test no executavel compilado..."
     $testOutput = Join-Path $root 'test_dist'
-    & $distExe --smoke-test $testOutput
+    & $distExe --smoke-test $testOutput | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "O teste do executavel compilado falhou."
     } else {
         Write-Host "Smoke test do executavel aprovado com sucesso!"
     }
 
-    # Step 5: Inno Setup Compilation
+    # Step 6: Inno Setup Compilation
     if (-not $SkipInstaller) {
         Write-Host ""
-        Write-Host "[5/5] Gerando instalador profissional Windows com Inno Setup..."
+        Write-Host "[6/6] Gerando instalador profissional Windows com Inno Setup..."
         $isccCandidates = @(
             $ISCC,
             "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
@@ -114,7 +175,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'PlantView_Studio_0.0.4_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'PlantView_Studio_0.0.5_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

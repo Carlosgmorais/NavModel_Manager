@@ -39,7 +39,6 @@ def attach_mesh_metadata(mesh: pv.PolyData, layer_name: str, color_rgb=None):
 
 def engine_path():
     root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-    # Check root/engine or local engine
     cand = root / 'engine' / 'plantview-dwg.exe'
     if cand.is_file():
         return cand
@@ -71,8 +70,6 @@ def parse_dwg_mesh_info(name: str) -> Tuple[str, str, str]:
 
 @lru_cache(maxsize=4)
 def _engine_signature(path, size, modified):
-    # A one-file executable extracts DLLs with new timestamps on every launch.
-    # Hash the decoder so cache identity survives those extractions.
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
@@ -88,7 +85,6 @@ def triangulate_polygon_3d(points: np.ndarray, indices: List[int]) -> List[int]:
     if n == 4:
         return [3, indices[0], indices[1], indices[2], 3, indices[0], indices[2], indices[3]]
 
-    # For n > 4: project to 2D best-fit plane using Newell's method for normal
     poly_pts = points[indices]
     normal = np.zeros(3)
     for i in range(n):
@@ -123,7 +119,6 @@ def triangulate_polygon_3d(points: np.ndarray, indices: List[int]) -> List[int]:
             if cross <= 0:
                 continue
 
-            # Ear test: ensure no other vertex is inside triangle (a, b, c)
             any_inside = False
             for k in range(count):
                 idx = verts[k]
@@ -150,7 +145,6 @@ def triangulate_polygon_3d(points: np.ndarray, indices: List[int]) -> List[int]:
     if count == 3:
         triangles.extend([3, indices[verts[0]], indices[verts[1]], indices[verts[2]]])
     elif count > 3:
-        # Graceful fallback for self-intersecting or complex non-simple polygons
         for k in range(1, count - 1):
             triangles.extend([3, indices[verts[0]], indices[verts[k]], indices[verts[k + 1]]])
 
@@ -161,7 +155,8 @@ def read_dwg(
     path,
     unit_scale=.001,
     progress_callback: Optional[Callable[[float, str], bool]] = None,
-    visited_files: Optional[Set[Path]] = None
+    visited_files: Optional[Set[Path]] = None,
+    force_reload: bool = False
 ):
     engine = engine_path()
     if not engine.is_file():
@@ -180,21 +175,37 @@ def read_dwg(
     t_start = time.monotonic()
     source_stat, engine_stat = source.stat(), engine.stat()
     engine_signature = _engine_signature(str(engine), engine_stat.st_size, engine_stat.st_mtime_ns)
+    # Cache version v6 incorporates Plant 3D elbows/fittings reconstruction, beam cross-section extrusion, and parallel ACIS tessellation
     cache_key = hashlib.sha256(
-        f'v2|{source}|{source_stat.st_size}|{source_stat.st_mtime_ns}|{engine_signature}'.encode()
+        f'v6|{source}|{source_stat.st_size}|{source_stat.st_mtime_ns}|{engine_signature}'.encode()
     ).hexdigest()
     cache_dir = Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'PlantView Studio' / 'Cache'
     cache_file = cache_dir / (cache_key + '.json')
+
+    if force_reload and cache_file.exists():
+        cache_file.unlink(missing_ok=True)
 
     with tempfile.TemporaryDirectory(prefix='PlantView-') as folder:
         root = Path(folder)
         result = root / 'geometry.json'
 
-        if cache_file.is_file():
-            shutil.copyfile(cache_file, result)
-            if progress_callback:
-                progress_callback(40.0, f'Loading {file_name} ...')
-        else:
+        used_cache = False
+        if not force_reload and cache_file.is_file():
+            try:
+                cached_data = json.loads(cache_file.read_text(encoding='utf-8-sig'))
+                cov = cached_data.get('coverage', {})
+                # Discard cache if empty or if invalid
+                if cov.get('status') == 'empty' or (cov.get('total_solids_found', 0) > 0 and len(cached_data.get('meshes', [])) == 0):
+                    cache_file.unlink(missing_ok=True)
+                else:
+                    shutil.copyfile(cache_file, result)
+                    used_cache = True
+                    if progress_callback:
+                        progress_callback(40.0, f'Loading {file_name} (Cache)...')
+            except Exception:
+                cache_file.unlink(missing_ok=True)
+
+        if not used_cache:
             if progress_callback:
                 progress_callback(25.0, f'Loading {file_name} ...')
 
@@ -232,7 +243,10 @@ def read_dwg(
         except (ValueError, OSError):
             cache_file.unlink(missing_ok=True)
             raise ValueError('Geometria DWG inválida. Tente abrir novamente para reconstruir o cache.')
-        if data.get('meshes') and not cache_file.exists():
+
+        cov = data.get('coverage', {})
+        # Only cache when models have valid output and are not classified as empty
+        if data.get('meshes') and not cache_file.exists() and cov.get('status') != 'empty':
             try:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 temporary_cache = cache_file.with_suffix('.tmp-' + str(os.getpid()))
@@ -264,34 +278,30 @@ def read_dwg(
         points = m.get('points')
         if not points:
             continue
-        pts = np.asarray(points, dtype=float)
+        pts = np.asarray(points, dtype=np.float32)
         if scale != 1.0:
-            pts = pts * scale
+            pts *= np.float32(scale)
 
         raw_faces = m.get('faces', [])
-        mesh = pv.PolyData(pts, raw_faces)
-        # Fast C++ hardware-accelerated triangulation for complex N-gons and cutouts
+        faces_arr = np.asarray(raw_faces, dtype=np.int64)
+        mesh = pv.PolyData(pts, faces_arr)
         try:
-            if len(raw_faces) > 0 and raw_faces[0] > 4:
+            if len(faces_arr) > 0 and faces_arr[0] > 4:
                 mesh = mesh.triangulate()
         except Exception:
             pass
-        total_triangles_count += getattr(mesh, 'n_cells', 1)
+        total_triangles_count += int(len(faces_arr) // 4) if len(faces_arr) > 0 and faces_arr[0] == 3 else getattr(mesh, 'n_cells', 1)
 
-        # Original CAD color preservation:
-        # Check if raw_color is genuine TrueColor or explicit non-white ACI
         _, _, layer_name = parse_dwg_mesh_info(m['name'])
         raw_color = m.get('color')
 
         is_default_white_or_gray = raw_color in ([255, 255, 255], [190, 201, 212], [230, 230, 230], None)
         if not is_default_white_or_gray:
-            # Genuine explicit entity color preserved
             color_rgb = list(raw_color)
         else:
-            # Resolve accurately by engineering layer according to AutoCAD / Plant 3D standards
             color_rgb = list(resolve_layer_color(layer_name))
 
-        if '[Plant3D]' in m['name']:
+        if any(tag in m['name'] for tag in ('[Plant3D]', '[Plant3D-Mesh]', '[Plant3D-Fitting]', '[Plant3D-Structure]')):
             proxy_converted_count += 1
 
         attach_mesh_metadata(mesh, layer_name, color_rgb)
@@ -301,7 +311,6 @@ def read_dwg(
             pct = 60.0 + (35.0 * i / max(1, total_meshes))
             progress_callback(pct, f'Loading {file_name} ...')
 
-    # Explicit Xref Resolution: only load external references explicitly requested by the DWG model
     xrefs_loaded_count = 0
     explicit_xrefs = data.get('xrefs', [])
     if explicit_xrefs:
@@ -321,24 +330,39 @@ def read_dwg(
 
     elapsed_time = time.monotonic() - t_start
 
-    # Section 10: Relatório Diagnóstico Completo de Importação
+    # Relatório Diagnóstico e Cobertura Completa (Prioridade 2 e 4)
     warnings = list(data.get('warnings', []))
+    cov = data.get('coverage', {})
+    status_label = {
+        'complete': 'COMPLETO (100% dos sólidos reconstruídos com sucesso)',
+        'partial': f'PARCIAL ({cov.get("failed_solids", 0)} sólidos com erro/incompletos)',
+        'empty': 'VAZIO (Nenhum sólido 3D reconstruído)'
+    }.get(cov.get('status', 'complete'), cov.get('status', 'Indefinido'))
+
     diag_report = [
         "============================================================",
         "PLANTVIEW STUDIO — DIAGNÓSTICO DE IMPORTAÇÃO DWG 3D",
         "============================================================",
         f"Arquivo: {file_name}",
-        f"Entidades totais encontradas: {data.get('total_entities', total_meshes)}",
-        f"Sólidos 3D ACIS / Meshes importados: {total_meshes}",
-        f"Objetos PROXY (Plant 3D / Estruturas) identificados: {proxy_converted_count}",
-        f"Objetos PROXY convertidos em malha 3D: {proxy_converted_count}",
-        f"Malhas 3D geradas no visor: {len(parts)}",
-        f"Xrefs encontradas e carregadas automaticamente: {xrefs_loaded_count}",
-        f"Total de triângulos na maquete: {total_triangles_count:,}",
+        f"Modo de Leitura: {data.get('read_mode', 'normal_failsafe').upper()}",
+        f"Status de Cobertura: {status_label}",
+        f"Sólidos 3D Identificados no DWG: {cov.get('total_solids_found', total_meshes)}",
+        f"  ├─ Reconstrução ACIS B-Rep Nativa: {cov.get('acis_success', total_meshes)}",
+        f"  ├─ Recuperados via Proxy GraphicData Fallback: {cov.get('proxy_fallback', 0)}",
+        f"  ├─ Recuperados via Wireframe 3D Fallback: {cov.get('wire_fallback', 0)}",
+        f"  └─ Sólidos com Falha na Reconstrução: {cov.get('failed_solids', 0)}",
+        f"Malhas 3D Exibidas no Visor: {len(parts)}",
+        f"Objetos PROXY (Plant 3D / Estruturas) no Visor: {proxy_converted_count}",
+        f"Xrefs Carregadas Automaticamente: {xrefs_loaded_count}",
+        f"Total de Triângulos na Maquete: {total_triangles_count:,}",
         f"Unidade do DWG: {data.get('units', 4)} (Escala: {scale} m/unidade)",
-        f"Tempo de importação: {elapsed_time:.2f} s",
+        f"Tempo de Importação: {elapsed_time:.2f} s",
+        f"Assinatura do Motor Nativo (SHA256): {engine_signature[:16]}...",
         "============================================================"
     ]
+    if cov.get('status') == 'partial':
+        warnings.append(f"AVISO CRÍTICO: Cobertura parcial ({cov.get('failed_solids', 0)} sólido(s) não puderam ser reconstruídos).")
+
     for line in reversed(diag_report):
         warnings.insert(0, line)
 
@@ -348,13 +372,13 @@ def read_dwg(
     return parts, warnings
 
 
-def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[float, str], bool]] = None):
+def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[float, str], bool]] = None, force_reload: bool = False):
     path = Path(path)
     ext = path.suffix.lower()
     warnings = []
 
     if ext == '.dwg':
-        parts, warnings = read_dwg(path, unit_scale, progress_callback)
+        parts, warnings = read_dwg(path, unit_scale, progress_callback, force_reload=force_reload)
     elif ext in ('.step', '.stp'):
         if progress_callback:
             progress_callback(15.0, f'Loading {path.name} ...')
@@ -395,7 +419,6 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         parts = []
         if points:
             mesh = pv.PolyData(np.asarray(points), faces)
-            # Default metallic steel blue for STEP engineering models
             layer = 'ESTRUTURA' if 'ESTRUTURA' in path.stem.upper() else 'EQUIP'
             color = resolve_layer_color(layer)
             attach_mesh_metadata(mesh, layer, color)
@@ -443,7 +466,6 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         scale = UNITS.get(unit, unit_scale)
         if unit not in UNITS: warnings.append(f'Unidade DXF não reconhecida; escala {scale} m/unidade.')
 
-        # Build layer color table from DXF document
         dxf_layer_colors = {}
         for l in doc.layers:
             color_idx = l.color

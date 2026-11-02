@@ -1,6 +1,7 @@
 """GPU Acceleration, Frustum Culling, Instancing and Diagnostics.
 
 Optimized for large industrial plant models (piping, equipment, valves, steel structures).
+Includes isolated diagnostic rendering mode (Prioridade 5).
 """
 import os
 import hashlib
@@ -54,16 +55,20 @@ def optimize_actor(actor):
 
 def geometry_fingerprint(mesh) -> Optional[Tuple[Tuple[int, int, str], np.ndarray]]:
     """Calculates invariant topology fingerprint to detect repeated components (valves, flanges, bolts)."""
-    points = np.asarray(mesh.points, dtype=np.float64)
-    if len(points) == 0:
+    points = np.asarray(mesh.points, dtype=np.float32)
+    n_pts = len(points)
+    if n_pts == 0:
         return None
-    origin = points[0].copy()
-    relative = np.ascontiguousarray(points - origin)
-    topology = np.ascontiguousarray(mesh.faces, dtype=np.int64)
-    digest = hashlib.blake2b(digest_size=20)
-    digest.update(relative.tobytes())
-    digest.update(topology.tobytes())
-    return (len(points), int(mesh.n_cells), digest.hexdigest()), origin
+    origin = points[0].astype(np.float64)
+    n_cells = int(getattr(mesh, 'n_cells', 0))
+    # Fast path for large unique meshes (>1500 vertices): fingerprint by first/mid/last relative points
+    if n_pts > 1500:
+        sample = np.ascontiguousarray(points[[0, n_pts // 3, (2 * n_pts) // 3, n_pts - 1]] - points[0])
+        digest = hashlib.blake2b(sample.tobytes(), digest_size=16).hexdigest()
+        return (n_pts, n_cells, digest), origin
+    relative = np.ascontiguousarray(np.round(points - points[0], 4))
+    digest = hashlib.blake2b(relative.tobytes(), digest_size=16).hexdigest()
+    return (n_pts, n_cells, digest), origin
 
 
 def make_instance_actor(plot, source, origins, color):
@@ -88,7 +93,6 @@ def make_instance_actor(plot, source, origins, color):
     return actor
 
 
-
 def combine_poly_datas(mesh_list: List[Any]) -> Any:
     """Concatenates PolyData meshes using hardware-accelerated C++ vtkAppendPolyData.
     Preserves all points and cells exactly without welding, tolerance merging, or topology distortion.
@@ -111,6 +115,35 @@ def combine_poly_datas(mesh_list: List[Any]) -> Any:
 
 def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str], Dict[str, Any]]:
     """Instance same-color translated clones, batch large industrial meshes, retain all names in tree."""
+    # Modo de Diagnóstico Isolado (Prioridade 5):
+    # Quando ativado (via PLANTVIEW_NO_BATCH=1 ou plot._no_batch_mode=True),
+    # desativa batching e instancing GPU para renderizar cada malha 100% individualmente,
+    # permitindo comparar peça por peça as malhas recebidas do Rust com os atores no VTK.
+    force_isolated = (os.environ.get('PLANTVIEW_NO_BATCH') == '1' or getattr(plot, '_no_batch_mode', False))
+    if force_isolated:
+        actors, names = [], []
+        total_triangles = 0
+        for name, mesh in parts:
+            color_data = mesh.field_data.get('plantview_rgb')
+            color = tuple(int(x)/255. for x in color_data[0]) if color_data is not None else (.74, .79, .83)
+            actor = plot.add_mesh(mesh, color=color, smooth_shading=False, reset_camera=False, render=False)
+            optimize_actor(actor)
+            actor.SetVisibility(visible)
+            actor._plantview_name = name
+            actor._plantview_layer = getattr(mesh, '_plantview_layer', '0')
+            actor._plantview_color = color
+            actors.append(actor)
+            names.append(name)
+            total_triangles += getattr(mesh, 'n_cells', 1)
+        return actors, names, {
+            'gpu_actors': len(actors),
+            'instanced_parts': 0,
+            'instance_groups': 0,
+            'original_parts': len(parts),
+            'total_triangles': total_triangles,
+            'mode': 'DIAGNOSTIC_ISOLATED'
+        }
+
     buckets = defaultdict(list)
     for name, mesh in parts:
         color_data = mesh.field_data.get('plantview_rgb')
@@ -250,8 +283,10 @@ def gpu_report(plot) -> str:
         details.append(f"Memória RAM do Sistema: {mem['used_ram_mb']:.0f} MB / {mem['total_ram_mb']:.0f} MB ({mem['load_pct']}%)")
     
     renderer = plot.renderer
-    actors_count = renderer.GetActors().GetNumberOfItems()
+    actors_count = renderer.GetActors().GetNumberOfItems() if renderer else 0
+    is_isolated = getattr(plot, '_no_batch_mode', False) or os.environ.get('PLANTVIEW_NO_BATCH') == '1'
     details.append(f'Atores Ativos no Viewport: {actors_count}')
+    details.append(f'Modo de Renderização: {"DIAGNÓSTICO ISOLADO (SEM BATCHING)" if is_isolated else "OTIMIZADO GPU (60 FPS INSTANCING + BATCHING)"}')
     details.append('Frustum Culling: Ativo (vtkFrustumCoverageCuller)')
     details.append('Buffer Instancing VBO: Ativo (SetStatic=True)')
     return '\n'.join(details)

@@ -102,6 +102,33 @@ class Checks(unittest.TestCase):
             self.assertTrue(any('TEXT' in w for w in warnings))
             np.testing.assert_allclose(parts[0][1].bounds,[1,2,2,2,0,0])
 
+
+    def test_dwg_coverage_report_and_diagnostics(self):
+        """Valida que o leitor reporta cobertura COMPLETA e diagnóstico detalhado de sólidos 3D."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'solids_cov.dwg'
+            subprocess.run([str(engine_path()), '--fixture', str(path)], check=True)
+            parts, warnings = read_model(path, force_reload=True)
+            self.assertEqual(len(parts), 2)
+            diag_lines = [w for w in warnings if 'PLANTVIEW STUDIO — DIAGNÓSTICO' in w or 'Status de Cobertura' in w]
+            self.assertTrue(len(diag_lines) >= 1)
+            self.assertTrue(any('COMPLETO' in w for w in warnings))
+
+    def test_gpu_diagnostic_isolated_mode(self):
+        """Valida o modo de diagnóstico isolado (PLANTVIEW_NO_BATCH=1) da Prioridade 5."""
+        from unittest.mock import patch
+        from plantview.gpu import add_optimized_parts
+        plot = pv.Plotter(off_screen=True)
+        m1 = pv.Cube(center=(0, 0, 0))
+        m2 = pv.Cube(center=(5, 0, 0))
+        parts = [('Cube1', m1), ('Cube2', m2)]
+        with patch.dict(os.environ, {'PLANTVIEW_NO_BATCH': '1'}):
+            actors, names, stats = add_optimized_parts(plot, parts, visible=True)
+            self.assertEqual(len(actors), 2)
+            self.assertEqual(stats['gpu_actors'], 2)
+            self.assertEqual(stats['mode'], 'DIAGNOSTIC_ISOLATED')
+        plot.close()
+
     def test_unsupported_format(self):
         with self.assertRaisesRegex(ValueError, 'SDK'): read_model('model.rvt')
 

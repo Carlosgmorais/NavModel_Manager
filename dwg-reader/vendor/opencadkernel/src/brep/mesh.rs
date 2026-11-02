@@ -945,6 +945,27 @@ fn hairline_face(body: &Body, face: FaceKey) -> bool {
     })
 }
 
+/// Fast mesh-only tessellation for 3D viewport rendering (skips wireframe edge classification and cone silhouette recovery).
+pub fn tessellate_fast(body: &Body, tolerance: TessellationTolerance) -> BodyMesh {
+    let _normals = SplineNormals::open();
+    let schedules = body_edge_schedules(body, tolerance);
+    let mut out = BodyMesh::default();
+    for face_key in body.face_keys() {
+        let max_angle = face_chordal_angle(body, face_key, tolerance.angle, tolerance.chordal);
+        match scheduled_face(body, face_key, max_angle, tolerance.linear, &schedules)
+            .or_else(|| finer_face(body, face_key, max_angle, tolerance.linear))
+        {
+            Some(mesh) => {
+                out.mesh.absorb(mesh);
+            }
+            None if hairline_face(body, face_key) => {}
+            None => out.missing_faces.push(face_key),
+        }
+    }
+    out.missing_faces.dedup();
+    out
+}
+
 /// Tessellates faces and edges from one shared sample schedule.
 pub fn tessellate(body: &Body, tolerance: TessellationTolerance) -> BodyMesh {
     let _normals = SplineNormals::open();
@@ -3997,10 +4018,10 @@ const MAX_DEPTH: u32 = 32;
 /// far, so a span whose angle never settles (one that measures NaN, say)
 /// would otherwise split until the depth cap: 2^32 calls, or 2^50 once the
 /// floating-point spacing runs out under the face cap.
-const PCURVE_REFINE_BUDGET: usize = 1 << 14;
-const MAX_FACE_DEPTH: u32 = 128;
-const MAX_FACE_PASSES: usize = 128;
-const MAX_FACE_ADDITIONS: usize = 262_144;
+const PCURVE_REFINE_BUDGET: usize = 1 << 12;
+const MAX_FACE_DEPTH: u32 = 64;
+const MAX_FACE_PASSES: usize = 16;
+const MAX_FACE_ADDITIONS: usize = 16_384;
 
 /// Triangulates a whole body.
 ///
@@ -4028,7 +4049,7 @@ pub fn face(body: &Body, face: FaceKey, max_angle: f64, tolerance: f64) -> Optio
 /// by at most the tolerance, which a hole the size of the face cannot beat.
 fn finer_face(body: &Body, face: FaceKey, max_angle: f64, tolerance: f64) -> Option<Mesh> {
     let node = body.faces.get(face)?;
-    for factor in [0.1, 0.01] {
+    for factor in [0.25] {
         let schedules: HashMap<EdgeKey, Vec<super::place::EdgeSample>> = node
             .loops
             .iter()

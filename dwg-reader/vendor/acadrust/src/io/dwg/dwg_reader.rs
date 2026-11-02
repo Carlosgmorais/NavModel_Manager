@@ -451,6 +451,23 @@ fn extract_acds_record_blobs(buf: &[u8], modeler_handles: &HashSet<u64>) -> Vec<
         buf.get(p..p + 4)
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
     };
+    // Index all `blob01` segments by their `seg_idx` (at header offset +8) so
+    // external blob reference descriptors (`0xBB106BA1`) in `_data_` records can
+    // resolve their exact single- or multi-chunk SAB payload by segment ID
+    // regardless of segment ordering in the file.
+    let blob_marker = [0xACu8, 0xD5, b'b', b'l', b'o', b'b', b'0', b'1'];
+    let mut blob01_map: HashMap<u32, usize> = HashMap::new();
+    let mut bscan = 0usize;
+    while let Some(rel) = memchr::memmem::find(&buf[bscan..], &blob_marker) {
+        let bseg = bscan + rel;
+        bscan = bseg + 8;
+        if bseg + 80 <= buf.len() && rd(bseg + 12) == Some(1) {
+            if let Some(seg_idx) = rd(bseg + 8) {
+                blob01_map.insert(seg_idx, bseg);
+            }
+        }
+    }
+
     let marker = [0xACu8, 0xD5, 0x5F, 0x64, 0x61, 0x74, 0x61, 0x5F]; // "\xAC\xD5_data_"
     let mut out: Vec<(u64, Vec<u8>)> = Vec::new();
     // Records whose blob is not in the table's own data — handled below from
@@ -506,6 +523,72 @@ fn extract_acds_record_blobs(buf: &[u8], modeler_handles: &HashSet<u64>) -> Vec<
             let Some(mp) = memchr::memmem::find(region, b"ASM BinaryFile")
                 .or_else(|| memchr::memmem::find(region, b"ACIS BinaryFile"))
             else {
+                // Check for an explicit AcDs `blob01` reference descriptor (magic `0xBB106BB1` = 3138415537):
+                //   u32[0] = 0xBB106BB1
+                //   u64[1..3] = total_blob_size
+                //   u32[3] = num_chunks
+                //   u32[4] = descriptor_size (32 + 8 * num_chunks)
+                //   u32[5] = std_chunk_size
+                //   u32[6] = last_chunk_size
+                //   u64[7..9] = 0
+                //   u64[9..] = array of `num_chunks` `blob01` segment indices (`seg_idx`)
+                if region.len() >= 44
+                    && u32::from_le_bytes(region[0..4].try_into().unwrap()) == 0xBB10_6BB1
+                {
+                    let num_chunks =
+                        u32::from_le_bytes(region[12..16].try_into().unwrap()) as usize;
+                    let std_chunk_sz =
+                        u32::from_le_bytes(region[20..24].try_into().unwrap()) as usize;
+                    let last_chunk_sz =
+                        u32::from_le_bytes(region[24..28].try_into().unwrap()) as usize;
+                    if num_chunks >= 1 && region.len() >= 36 + num_chunks * 8 {
+                        let mut chunk_segs = Vec::with_capacity(num_chunks);
+                        for c in 0..num_chunks {
+                            let c_off = 36 + c * 8;
+                            let c_idx =
+                                u32::from_le_bytes(region[c_off..c_off + 4].try_into().unwrap());
+                            if let Some(&bseg) = blob01_map.get(&c_idx) {
+                                chunk_segs.push(bseg);
+                            } else {
+                                chunk_segs.clear();
+                                break;
+                            }
+                        }
+                        if chunk_segs.len() == num_chunks {
+                            let total_cap =
+                                std_chunk_sz.saturating_mul(num_chunks.saturating_sub(1))
+                                    + last_chunk_sz;
+                            let mut assembled = Vec::with_capacity(total_cap.min(64 * 1024 * 1024));
+                            for (c, &bseg) in chunk_segs.iter().enumerate() {
+                                let clen = if c + 1 < num_chunks {
+                                    std_chunk_sz
+                                } else {
+                                    last_chunk_sz
+                                };
+                                let payload_start = bseg + 80;
+                                let payload_end = (payload_start + clen).min(buf.len());
+                                if payload_start < payload_end {
+                                    if let Some(magic_rel) =
+                                        find_acds_magic(&buf[payload_start..payload_end], 0)
+                                    {
+                                        claimed_starts.insert(payload_start + magic_rel);
+                                    }
+                                    assembled.extend_from_slice(&buf[payload_start..payload_end]);
+                                }
+                            }
+                            if let Some(b_mp) = find_acds_magic(&assembled, 0) {
+                                if let Some((b_end, b_mlen)) =
+                                    find_acds_end(&assembled, b_mp, assembled.len())
+                                {
+                                    out.push((handle, assembled[b_mp..b_end + b_mlen].to_vec()));
+                                } else {
+                                    out.push((handle, assembled[b_mp..].to_vec()));
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if modeler_handles.contains(&handle) {
                     orphan_handles.push(handle); // blob lives in an external segment
                 }

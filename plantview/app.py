@@ -52,7 +52,8 @@ class ImportWorker(QtCore.QThread):
             parts, warnings = read_model(
                 self.record['path'],
                 unit_scale=self.record.get('scale', 0.001),
-                progress_callback=on_progress
+                progress_callback=on_progress,
+                force_reload=self.record.get('force_reload', False)
             )
             if self._cancelled:
                 return
@@ -194,6 +195,9 @@ class Window(W.QMainWindow):
         self.shortcut_hide = QtGui.QShortcut(QtGui.QKeySequence('Ctrl+H'), self)
         self.shortcut_hide.activated.connect(self.toggle_hide_selected)
 
+        self.shortcut_diag = QtGui.QShortcut(QtGui.QKeySequence('Ctrl+Shift+D'), self)
+        self.shortcut_diag.activated.connect(self.toggle_diagnostic_render_mode)
+
         # FPS & Performance Timer (Updates every 1000ms)
         self.perf_timer = QtCore.QTimer(self)
         self.perf_timer.timeout.connect(self.update_performance_status)
@@ -203,7 +207,7 @@ class Window(W.QMainWindow):
         self.statusBar().showMessage(
             'Pronto | Olhar: Botão esquerdo • Pan: Botão meio • Orbit: Shift + Botão meio • Zoom: Scroll • F5: Atualizar • Ctrl+Z: Desfazer câmera'
         )
-        self.log.appendPlainText('PlantView Studio 2026 v0.0.4 iniciado com renderização OpenGL acelerada por GPU.')
+        self.log.appendPlainText('PlantView Studio 2026 v0.0.5 iniciado com renderização OpenGL acelerada por GPU.')
 
     def on_camera_changed(self, camera):
         """Update floating coordinate badges whenever camera moves."""
@@ -420,12 +424,12 @@ class Window(W.QMainWindow):
             camera.SetViewUp(0.0, 0.0, 1.0)
             camera.SetFocalPoint(cx, cy, cz)
             camera.SetPosition(
-                cx - 1.25 * diag,
-                cy - 1.25 * diag,
-                cz + 0.75 * diag
+                cx - 0.85 * diag,
+                cy - 0.85 * diag,
+                cz + 0.55 * diag
             )
             if renderer:
-                renderer.ResetCameraClippingRange()
+                self.navigation.update_clipping_range(camera, renderer, full_reset=True)
         self.plot.render()
 
     def _add_result(self, record, parts, warnings):
@@ -517,6 +521,7 @@ class Window(W.QMainWindow):
                 path=m['path'],
                 visible=m['visible'],
                 scale=m.get('scale', 0.001),
+                force_reload=True,
                 _replace=m
             ))
 
@@ -783,6 +788,17 @@ class Window(W.QMainWindow):
             self.plot.add_mesh(pv.Line(a, b), color='#ffcc00', line_width=4, name='measure', pickable=False, reset_camera=False)
             self.log.appendPlainText(f'MEDIDA: Distância = {dist:.4f} m ({dist * 1000:.1f} mm) | A={a.round(4)} | B={b.round(4)}')
             self.measure_points = []
+
+
+    def toggle_diagnostic_render_mode(self):
+        """Alterna entre Renderização Otimizada GPU (60 FPS) e Diagnóstico Isolado (1:1 peças)."""
+        current = getattr(self.plot, '_no_batch_mode', False)
+        new_mode = not current
+        self.plot._no_batch_mode = new_mode
+        mode_str = 'DIAGNÓSTICO ISOLADO (1:1 sem batching)' if new_mode else 'OTIMIZADO GPU (60 FPS)'
+        self.log.appendPlainText(f'\n[GPU DIAGNÓSTICO] Modo alternado para: {mode_str}.')
+        self.statusBar().showMessage(f'Modo GPU: {mode_str}')
+        self.refresh_models()
 
     def show_gpu_info(self):
         self.plot.render()

@@ -1406,7 +1406,7 @@ pub struct CadDocument {
     /// saves can reuse it when every attached SAB body is still unchanged.
     /// Shared so document snapshots do not duplicate large modeler data.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) raw_acds_data: Option<Arc<Vec<u8>>>,
+    pub raw_acds_data: Option<Arc<Vec<u8>>>,
     /// Original AC1009 fixed-layout header, retaining legacy fields without
     /// counterparts in `HeaderVariables` for native R12 saves.
     #[cfg_attr(feature = "serde", serde(skip))]
