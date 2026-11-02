@@ -1,8 +1,9 @@
-# Build script for PlantView Studio 0.0.6 on Windows 11 x64
+# Build script for NavModel Manager 0.0.7 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
     [switch]$SkipInstaller,
+    [switch]$UseExistingEngine,
     [string]$CopyTo = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,7 @@ if (-not $cargoExe) {
     $cmdCargo = Get-Command 'cargo.exe' -ErrorAction SilentlyContinue
     if ($cmdCargo) { $cargoExe = $cmdCargo.Source }
 }
-if (-not $cargoExe) {
+if (-not $cargoExe -and -not $UseExistingEngine) {
     throw "Compilador Rust Cargo nao encontrado no sistema. Instale o Rustup."
 }
 
@@ -63,11 +64,12 @@ $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  PLANTVIEW STUDIO 0.0.6 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  NAVMODEL MANAGER 0.0.7 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
     Write-Host "Cargo:  $cargoExe"
 
+    if (-not $UseExistingEngine) {
     # Step 1: Compile Rust DWG Engine (Mandatory Priority 1)
     Write-Host ""
     Write-Host "[1/6] Compilando motor nativo Rust dwg-reader com Cargo (--release)..."
@@ -106,6 +108,14 @@ try {
     Write-Host "Motor nativo compilado e copiado para: $targetBin"
     Write-Host "Tamanho: $engineSizeMb MB | SHA256: $engineHash"
 
+    } else {
+        $enginePath = Join-Path $root 'engine/plantview-dwg.exe'
+        $meta = Get-Content (Join-Path $root 'engine/engine_info.json') | ConvertFrom-Json
+        if ((Get-FileHash $enginePath -Algorithm SHA256).Hash -ne $meta.sha256) {
+            throw 'Motor DWG existente nao corresponde ao SHA256 registrado.'
+        }
+        Write-Host 'Motor DWG original verificado por SHA256; preservado sem recompilar.'
+    }
     # Step 2: Generate icons and assets
     Write-Host ""
     Write-Host "[2/6] Gerando icones de alta resolucao e arte do instalador..."
@@ -117,6 +127,8 @@ try {
     Write-Host "[3/6] Executando testes automatizados e integracao..."
     & $pyExe -m unittest tests.test_gpu_logic_light
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de logica GPU." }
+    & $pyExe -m unittest tests.test_navmodel_ui
+    if ($LASTEXITCODE -ne 0) { throw "Falha nos testes da interface NavModel." }
     & $pyExe tests/verify.py
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integracao CAD." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
@@ -127,7 +139,7 @@ try {
     & $pyExe -m PyInstaller --noconfirm --clean PlantViewStudio.spec
     if ($LASTEXITCODE -ne 0) { throw "Falha na compilacao com PyInstaller." }
 
-    $distExe = Join-Path $root 'dist/PlantView Studio.exe'
+    $distExe = Join-Path $root 'dist/NavModel Manager/NavModel Manager.exe'
     if (-not (Test-Path $distExe)) {
         throw "Executavel nao encontrado em: $distExe"
     }
@@ -141,6 +153,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "O teste do executavel compilado falhou."
     } else {
+        $smoke = Get-Content (Join-Path $testOutput 'smoke-test.json') -Raw | ConvertFrom-Json
+        if ($smoke.models.Count -ne 3 -or $smoke.errors.Count -ne 0 -or $smoke.splash_visible_ms -lt 5000) {
+            throw 'Smoke test incompleto: exige DWG, STEP, IFC e splash de pelo menos 5000 ms.'
+        }
         Write-Host "Smoke test do executavel aprovado com sucesso!"
     }
 
@@ -175,7 +191,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'PlantView_Studio_0.0.6_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.7_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

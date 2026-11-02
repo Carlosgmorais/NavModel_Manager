@@ -55,15 +55,32 @@ a = Analysis(
 a.binaries = [entry for entry in a.binaries
               if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icudt78.dll'}]
 
+# Some bundled CAD dependency licenses have >260-character nested source paths.
+# Keep every license verbatim under short stable names, with an index to the source path.
+import hashlib
+import json
+license_index = {}
+short_datas = []
+for dest, source, kind in a.datas:
+    if dest.replace('\\','/').startswith('licenses/') and len(dest) > 95:
+        short = 'licenses/long-path/' + hashlib.sha256(dest.encode()).hexdigest()[:20] + Path(dest).suffix
+        license_index[short] = dest
+        dest = short
+    short_datas.append((dest, source, kind))
+index_file = ROOT / 'build' / 'license-path-index.json'
+index_file.parent.mkdir(exist_ok=True)
+index_file.write_text(json.dumps(license_index, indent=2), encoding='utf-8')
+a.datas = short_datas + [('licenses/license-path-index.json', str(index_file), 'DATA')]
+
 pyz = PYZ(a.pure, [], cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
-    exclude_binaries=False,
-    name='PlantView Studio',
+    [],
+    exclude_binaries=True,
+    name='NavModel Manager',
+    version=str(ROOT / 'resources' / 'version_info.txt'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -74,5 +91,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / 'resources' / 'plantview.ico'),
+    icon=str(ROOT / 'resources' / 'navmodel.ico'),
 )
+
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='NavModel Manager')

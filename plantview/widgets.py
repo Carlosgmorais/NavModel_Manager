@@ -57,18 +57,24 @@ def setup_nav_cube(interactor):
     cube.SetZPlusFaceText("TOPO")
     cube.SetZMinusFaceText("BASE")
 
-    cube.SetFaceTextScale(0.35)
+    cube.SetFaceTextScale(0.17)
+    cube.SetTextEdgesVisibility(False)
     cube.GetTextEdgesProperty().SetColor(0.2, 0.3, 0.45)
     cube.GetTextEdgesProperty().SetLineWidth(1.5)
     cube.GetCubeProperty().SetColor(0.90, 0.93, 0.96)
+    cube.GetCubeProperty().SetAmbient(1.0)
+    cube.GetCubeProperty().SetDiffuse(0.0)
+    cube.GetCubeProperty().SetEdgeVisibility(True)
+    cube.GetCubeProperty().SetEdgeColor(0.2,0.35,0.5)
+    cube.SetZFaceTextRotation(180)
 
     # Face coloring for clean industrial look
-    cube.GetXPlusFaceProperty().SetColor(0.85, 0.90, 0.95)
-    cube.GetXMinusFaceProperty().SetColor(0.85, 0.90, 0.95)
-    cube.GetYPlusFaceProperty().SetColor(0.80, 0.86, 0.92)
-    cube.GetYMinusFaceProperty().SetColor(0.80, 0.86, 0.92)
-    cube.GetZPlusFaceProperty().SetColor(0.92, 0.95, 0.98)
-    cube.GetZMinusFaceProperty().SetColor(0.75, 0.80, 0.85)
+    cube.GetXPlusFaceProperty().SetColor(0.04, 0.18, 0.31)
+    cube.GetXMinusFaceProperty().SetColor(0.04, 0.18, 0.31)
+    cube.GetYPlusFaceProperty().SetColor(0.04, 0.18, 0.31)
+    cube.GetYMinusFaceProperty().SetColor(0.04, 0.18, 0.31)
+    cube.GetZPlusFaceProperty().SetColor(0.04, 0.18, 0.31)
+    cube.GetZMinusFaceProperty().SetColor(0.04, 0.18, 0.31)
 
     # Resolve underlying vtkRenderWindowInteractor if a PyVista/Qt widget was passed
     real_interactor = interactor
@@ -87,98 +93,6 @@ def setup_nav_cube(interactor):
     return marker, cube
 
 
-class NavisViewControlOverlay(W.QFrame):
-    """Floating view and projection controls located in the top-right corner under NavCube."""
-    def __init__(self, window, parent=None):
-        super().__init__(parent)
-        self.window = window
-        self.setStyleSheet("""
-            NavisViewControlOverlay {
-                background: transparent;
-                border: none;
-            }
-            QToolButton {
-                background-color: rgba(240, 246, 252, 0.88);
-                border: 1px solid #a8c2dc;
-                border-radius: 4px;
-                color: #17426e;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: 10px;
-                font-weight: 600;
-                padding: 3px 6px;
-                min-width: 44px;
-            }
-            QToolButton:hover {
-                background-color: #ffffff;
-                border-color: #2878cf;
-                color: #0b57d0;
-            }
-            QToolButton:pressed {
-                background-color: #cce4f7;
-            }
-        """)
-
-        layout = W.QVBoxLayout(self)
-        layout.setContentsMargins(0, 8, 10, 0)
-        layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
-        layout.setSpacing(3)
-
-        # Space reserved for the 3D NavCube above these buttons
-        spacer = W.QWidget()
-        spacer.setFixedHeight(125)
-        spacer.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(spacer)
-
-        # Projection toggle button: Perspectiva / Paralela
-        self.btn_proj = W.QToolButton()
-        self.btn_proj.setText('Perspectiva')
-        self.btn_proj.setToolTip('Alternar Projeção (Perspectiva / Paralela Ortográfica)')
-        self.btn_proj.clicked.connect(self.toggle_projection)
-        layout.addWidget(self.btn_proj)
-
-        # Quick view row
-        views_row = W.QHBoxLayout()
-        views_row.setSpacing(2)
-
-        b_iso = W.QToolButton()
-        b_iso.setText('Iso')
-        b_iso.setToolTip('Vista Isométrica Padrão')
-        b_iso.clicked.connect(self.window.view_isometric_smart)
-        views_row.addWidget(b_iso)
-
-        b_top = W.QToolButton()
-        b_top.setText('Topo')
-        b_top.setToolTip('Vista Superior (Plano XY)')
-        b_top.clicked.connect(self.window.view_top_smart)
-        views_row.addWidget(b_top)
-
-        b_front = W.QToolButton()
-        b_front.setText('Frente')
-        b_front.setToolTip('Vista Frontal (Plano XZ)')
-        b_front.clicked.connect(self.window.view_front_smart)
-        views_row.addWidget(b_front)
-
-        b_right = W.QToolButton()
-        b_right.setText('Lat.')
-        b_right.setToolTip('Vista Lateral Direita (Plano YZ)')
-        b_right.clicked.connect(self.window.view_right_smart)
-        views_row.addWidget(b_right)
-
-        layout.addLayout(views_row)
-
-    def toggle_projection(self):
-        self.window.toggle_projection()
-        self.update_button_label()
-
-    def update_button_label(self):
-        camera, _ = self.window.navigation.camera()
-        if camera:
-            if camera.GetParallelProjection():
-                self.btn_proj.setText('Paralela')
-            else:
-                self.btn_proj.setText('Perspectiva')
-
-
 class NavisLayerManagerDialog(W.QDialog):
     """Layer Manager & Appearance Profiler: customize DWG layer colors and visibility."""
     color_changed = QtCore.Signal(str, tuple)
@@ -187,7 +101,7 @@ class NavisLayerManagerDialog(W.QDialog):
     def __init__(self, layer_manager, parent=None):
         super().__init__(parent)
         self.layer_manager = layer_manager
-        self.setWindowTitle('PlantView — Appearance Profiler & Gerenciador de Layers')
+        self.setWindowTitle('NavModel Manager — Camadas')
         self.resize(520, 420)
         self.setStyleSheet("""
             QDialog {

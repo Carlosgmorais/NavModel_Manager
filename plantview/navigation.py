@@ -29,6 +29,8 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         self.camera_history = []
         self._pre_movement_state = None
         self.on_shift_pick = None
+        self.selection_mode = False
+        self._click_start = None
         self._move_count = 0
         self.orbit_pivot = None
         self.last_valid_target = None
@@ -262,6 +264,7 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             if self.on_shift_pick:
                 self.on_shift_pick(pos[0], pos[1])
                 return
+        self._click_start = interactor.GetEventPosition()
         self._active_button = 'left'
         self.previous = interactor.GetEventPosition()
         self.drag_mode = 'look'
@@ -295,6 +298,12 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             interactor.GetRenderWindow().SetDesiredUpdateRate(30.0)
 
     def mouse_up(self, obj, event):
+        interactor = self.GetInteractor()
+        if self.selection_mode and self._active_button == 'left' and self._click_start:
+            x, y = interactor.GetEventPosition()
+            if abs(x-self._click_start[0]) + abs(y-self._click_start[1]) <= 4 and self.on_shift_pick:
+                self.on_shift_pick(x, y)
+        self._click_start = None
         self._active_button = None
         self.drag_mode = None
         self.previous = None

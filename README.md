@@ -1,63 +1,54 @@
-# PlantView Studio — v0.0.2
+# NavModel Manager — 0.0.7
 
-Aplicativo desktop Windows independente para visualização e coordenação de maquetes industriais 3D federadas. Interface inspirada no **Autodesk Navisworks Manage**, com aceleração por GPU, navegação livre imersiva e preservação de cores originais DWG.
+Aplicativo desktop Windows para visualização e coordenação de maquetes industriais 3D federadas, com PySide6 e VTK/OpenGL.
 
----
+## Identidade e interface
 
-## 1. Destaques da Versão v0.0.2
+A identidade foi extraída dos PNGs aprovados em `resources/reference`. A geometria do símbolo NV não foi redesenhada. `resources/asset-provenance.json` registra origem, recorte e hash.
 
-- **Aceleração por GPU:** Renderização otimizada com buffers estáticos OpenGL/VTK, Frustum Culling em hardware (`vtkFrustumCoverageCuller`), compartilhamento VBO e seleção individual de componentes.
-- **Navegação 3D Livre (Estilo Navisworks):**
-  - **Look Around:** Botão esquerdo do mouse pressionado + arrastar gira a visão a partir da posição da câmera (primeira pessoa imersiva dentro da maquete).
-  - **Pan:** Scroll pressionado (botão do meio) + arrastar desloca a câmera lateral e verticalmente.
-  - **Ferramenta Orbital:** Shift + Scroll pressionado (botão do meio) + arrastar orbita em torno do ponto de foco.
-  - **Zoom / Dolly:** Roda do mouse (scroll) avança e recua suavemente.
-  - **Shift Multiplier:** Tecla Shift acelera a movimentação para percorrer grandes distâncias na maquete.
-  - **F5:** Atualiza modelos modificados no disco sem resetar a câmera nem a visibilidade.
-- **Interface Navisworks Manage:**
-  - Ribbon superior com abas (*Home*, *Viewpoint*, *Review*) e grupos (*Project*, *Select & Search*, *Visibility*, *Display*, *Tools*).
-  - Fundo com gradiente suave degradê do céu ao horizonte (`#5b8ecb` a `#d8e8f8`).
-  - Painel HUD de Coordenadas e Elevação no canto inferior esquerdo (`X: ... m  Y: ... m  Z: ... m`, `EL: ... m`).
-  - Tela modal de carregamento estilizada (*Loading ...*) com percentual, nome do arquivo e barras de progresso duplas.
-- **Fidelidade de Cores DWG:**
-  - Tabela canônica de 256 cores ACI (AutoCAD Color Index).
-  - Suporte a ByLayer, ByBlock e True Color RGB.
-  - Gerenciador de Aparência (*Appearance Profiler / Layers*) com controle de cores e visibilidade de camadas.
-- **Distribuição Pronta:** Executável nativo standalone e instalador oficial Windows via Inno Setup 6 (`release/PlantView_Studio_0.0.2_Setup_x64.exe`).
+- Ribbon nativa com menu NV separado de Início; Append e Refresh em azul.
+- Árvore à esquerda e propriedades à direita; painéis redimensionáveis e destacáveis.
+- Fontes Segoe UI; paleta azul-marinho; botões desenhados como vetores Qt, não imagens de mockups.
+- Cubo CAD clicável, com faces, arestas e cantos: 26 orientações. Duplo clique restaura isométrica e Ctrl+Z desfaz a vista. O foco, a distância, a escala ortogonal e a projeção são preservados.
+- Splash com fundo sólido, wireframe e logo extraídos das referências; duração visível mínima de 5 segundos.
+- Ícone Windows de 16, 24, 32, 48, 64, 128 e 256 px; metadados e atalhos NavModel Manager.
+- O viewport não mostra mensagens de boas-vindas.
 
----
+## Controles
 
-## 2. Comandos e Atalhos de Teclado
+| Ação | Controle |
+|---|---|
+| Append | Ctrl+I |
+| Refresh | F5; preserva câmera e visibilidade |
+| Selecionar | Ativar botão Selecionar e clicar, ou Shift+clique |
+| Olhar | Arrastar botão esquerdo |
+| Pan | Arrastar botão do meio |
+| Orbitar | Shift + botão do meio |
+| Zoom | Roda do mouse |
+| Desfazer câmera | Ctrl+Z |
+| Ocultar / mostrar seleção | Ctrl+H |
+| Medir | M |
+| Abrir / salvar projeto | Ctrl+O / Ctrl+S |
 
-| Ação | Atalho / Mouse | Descrição |
-|---|---|---|
-| **Look Around** | Botão Esquerdo + Arrastar | Olhar livremente ao redor na posição atual da câmera |
-| **Pan** | Botão do Meio (Scroll) + Arrastar | Mover a câmera lateralmente e verticalmente |
-| **Órbita** | Shift + Botão do Meio + Arrastar | Girar a visão em torno do ponto central focal |
-| **Zoom** | Roda do Mouse (Scroll) | Avançar ou recuar na direção da visão |
-| **Velocidade Rápida** | Manter Shift pressionado | Multiplicador de velocidade para navegação |
-| **Atualizar Modelos** | **F5** | Recarrega arquivos modificados preservando a câmera |
-| **Append** | **Ctrl + I** | Adicionar novos modelos à maquete federada |
-| **Ocultar** | **Ctrl + H** | Oculta o modelo ou elemento selecionado |
-| **Unhide All** | **Home -> Unhide All** | Restaura a visibilidade de todos os modelos |
-| **Medição** | **M** | Mede a distância 3D entre dois pontos da geometria |
-| **Salvar / Abrir** | **Ctrl + S / Ctrl + O** | Salvar e carregar maquete federada (`.pvproj`) |
+O formato `.pvproj` permanece compatível com os projetos PlantView existentes. Não houve mudança no leitor DWG/STEP, motor Rust, coordenadas, buffers GPU ou estratégia de agrupamento. A aba Animação é reservada e está explicitamente desabilitada: esta entrega não acrescenta um motor de animação.
 
----
+## Compilar e validar no Windows
 
-## 3. Gerando o Executável e Instalador
-
-Para compilar e gerar o pacote completo e instalador Windows:
+Com Python, dependências instaladas e Inno Setup 6:
 
 ```powershell
-.\build-windows.ps1
+.\build-windows.ps1 -UseExistingEngine
 ```
 
-Ou execute pelo prompt de comando:
-```cmd
-GERAR_INSTALADOR.bat
-```
+A opção acima verifica o hash do motor DWG distribuído no repositório e o preserva. Sem a opção, o script recompila o motor Rust usando Cargo, como na versão anterior.
 
-Os artefatos gerados são salvos em:
-- Executável Portátil: `dist\PlantView Studio\PlantView Studio.exe`
-- Instalador Windows: `release\PlantView_Studio_0.0.2_Setup_x64.exe`
+O processo executa 3 testes de lógica GPU, 4 testes de interface/cubo e 10 testes CAD/projeto/Refresh, empacota a aplicação, executa o smoke test do executável e gera o instalador. O instalador é copiado para a Área de Trabalho por padrão; `-CopyTo` permite outro destino.
+
+- Aplicação: `dist/NavModel Manager/NavModel Manager.exe`
+- Instalador: `release/NavModel_Manager_0.0.7_Setup_x64.exe`
+
+O instalador é um único `.exe`. A aplicação instalada contém dependências ao lado do executável, evitando extração de um pacote grande a cada inicialização. O pacote inclui as licenças de terceiros; caminhos excepcionalmente longos são encurtados e documentados no índice `licenses/license-path-index.json`.
+
+## Limites da validação
+
+Os testes usam os modelos de exemplo DWG, STEP e IFC e verificam coordenadas conhecidas. Foi validado também um DWG real de escada industrial. Isso não substitui a avaliação de toda maquete grande e de todos os tipos de entidades CAD. O agrupamento GPU existente continua determinando a granularidade selecionável. Não há certificado de assinatura digital configurado no projeto.

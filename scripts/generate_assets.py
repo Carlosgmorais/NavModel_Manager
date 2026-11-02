@@ -1,98 +1,64 @@
-"""Generate high-resolution application icons and Inno Setup installer artwork."""
-import os
+"""Extract approved logo pixels, then convert to Windows resource formats.
+No generative drawing or replacement logo: source rectangles are recorded below.
+"""
 from pathlib import Path
+import hashlib
+import json
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+ROOT = Path(__file__).resolve().parents[1]
+RES = ROOT / 'resources'
+
 def generate():
-    res_dir = Path(__file__).resolve().parents[1] / 'resources'
-    res_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Main Icon (512x512)
-    size = 512
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # Rounded base tile with Autodesk Navisworks blue gradient
-    # Gradient background
-    for y in range(size):
-        ratio = y / size
-        # From #0078d4 to #003a66
-        r = int(0 + (0 - 0) * ratio)
-        g = int(120 + (58 - 120) * ratio)
-        b = int(212 + (102 - 212) * ratio)
-        d.line([(32, y), (size - 32, y)], fill=(r, g, b, 255))
-
-    # Rounded corners mask
-    mask = Image.new('L', (size, size), 0)
-    d_mask = ImageDraw.Draw(mask)
-    d_mask.rounded_rectangle([32, 32, size - 32, size - 32], radius=80, fill=255)
-    img.putalpha(mask)
-
-    # Draw 3D Isometric Industrial Pipe & Vessel Lines
-    d = ImageDraw.Draw(img)
-    # Bevel border
-    d.rounded_rectangle([32, 32, size - 32, size - 32], radius=80, outline=(115, 185, 255, 220), width=6)
-
-    # 3D Vessel & Piping Grid
-    # Piping lines
-    p_color = (80, 220, 120, 240)    # Green piping
-    d.line([(120, 360), (220, 310), (320, 360)], fill=p_color, width=16)
-    d.line([(220, 310), (220, 200)], fill=p_color, width=16)
-    
-    # Flange / valve
-    d.ellipse([204, 184, 236, 216], fill=(240, 100, 60, 255), outline=(255, 255, 255, 255), width=4)
-
-    # Bold "PV" Monogram
-    # "P"
-    d.rectangle([130, 140, 166, 320], fill=(255, 255, 255, 255))
-    d.arc([130, 140, 240, 230], 270, 90, fill=(255, 255, 255, 255), width=36)
-    d.line([(148, 140), (185, 140)], fill=(255, 255, 255, 255), width=36)
-    d.line([(148, 230), (185, 230)], fill=(255, 255, 255, 255), width=36)
-
-    # "V"
-    d.line([(260, 140), (330, 320)], fill=(255, 255, 255, 255), width=36)
-    d.line([(330, 320), (400, 140)], fill=(255, 255, 255, 255), width=36)
-
-    # Subtitle: 3D PLANT
-    d.text((155, 390), "PLANTVIEW", fill=(210, 235, 255, 255))
-
-    # Save PNG
-    png_path = res_dir / 'plantview.png'
-    img.save(png_path, format='PNG')
-    print(f'Generated: {png_path}')
-
-    # Save Multi-resolution ICO
-    ico_path = res_dir / 'plantview.ico'
-    img.save(ico_path, format='ICO', sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-    print(f'Generated: {ico_path}')
-
-    # 2. Inno Setup Wizard Left Banner (164 x 314 BMP)
-    wiz = Image.new('RGB', (164, 314), (0, 75, 140))
-    d_wiz = ImageDraw.Draw(wiz)
-    for y in range(314):
-        ratio = y / 314
-        r = int(0 + 20 * ratio)
-        g = int(65 + 40 * ratio)
-        b = int(130 + 30 * ratio)
-        d_wiz.line([(0, y), (164, y)], fill=(r, g, b))
-    # Small icon stamp in center
-    icon_small = img.resize((96, 96), Image.Resampling.LANCZOS)
-    wiz.paste(icon_small, (34, 60), icon_small)
-    d_wiz.text((28, 180), "PLANTVIEW", fill=(255, 255, 255))
-    d_wiz.text((38, 205), "STUDIO 3D", fill=(180, 220, 255))
-    d_wiz.text((45, 235), "v0.0.2", fill=(120, 190, 240))
-    wiz_path = res_dir / 'installer_wizard.bmp'
-    wiz.save(wiz_path, format='BMP')
-    print(f'Generated: {wiz_path}')
-
-    # 3. Inno Setup Small Top Banner (55 x 55 BMP)
-    ban = img.resize((55, 55), Image.Resampling.LANCZOS)
-    ban_rgb = Image.new('RGB', (55, 55), (255, 255, 255))
-    ban_rgb.paste(ban, (0, 0), ban)
-    ban_path = res_dir / 'installer_banner.bmp'
-    ban_rgb.save(ban_path, format='BMP')
-    print(f'Generated: {ban_path}')
+    src = RES / 'reference' / 'identity-approved.png'
+    identity = Image.open(src).convert('RGB')
+    # The upper-left standalone NV mark, excluding separator and wordmark.
+    crop = identity.crop((88, 5, 352, 302))
+    rgb = np.asarray(crop).astype(float)
+    # Recover antialiased coverage against the near-white paper background.
+    alpha = np.clip((245 - rgb[:, :, 0]) / (245 - 5), 0, 1)
+    alpha[rgb[:, :, 0] > 190] = 0
+    navy = Image.new('RGBA', crop.size, '#082f4c')
+    navy.putalpha(Image.fromarray((alpha * 255).astype('uint8')))
+    navy.save(RES / 'logo-navy.png')
+    white = Image.new('RGBA', crop.size, 'white')
+    white.putalpha(navy.getchannel('A'))
+    white.save(RES / 'logo-white.png')
+    tile = Image.new('RGBA', (512, 512))
+    d = ImageDraw.Draw(tile)
+    d.rounded_rectangle((5, 5, 507, 507), radius=95, fill='#0b3a66')
+    mark = white.resize((342, 385), Image.Resampling.LANCZOS)
+    tile.alpha_composite(mark, (85, 63))
+    tile.save(RES / 'navmodel.png')
+    tile.save(RES / 'navmodel.ico', sizes=[(s,s) for s in (16,24,32,48,64,128,256)])
+    # Retain only the industrial wireframe from the approved splash, no UI pixels.
+    source = Image.open(RES / 'reference' / 'splash-approved.png').convert('RGB')
+    art = source.crop((630, 140, 1480, 735))
+    a = np.asarray(art).astype(float)
+    strength = np.clip((a[:, :, 2] - 75) / 115, 0, 0.42)
+    strength *= np.minimum(np.arange(art.width)[None, :] / 100, 1)
+    wire = Image.new('RGBA', art.size, '#a5c9e9')
+    wire.putalpha(Image.fromarray((strength * 255).astype('uint8')))
+    wire.save(RES / 'splash-art.png')
+    wizard = Image.new('RGB', (164, 314), '#0b3a66')
+    icon = tile.resize((112,112), Image.Resampling.LANCZOS)
+    wizard.paste(icon, (26,52), icon)
+    draw = ImageDraw.Draw(wizard)
+    font = ImageFont.truetype('C:/Windows/Fonts/segoeuib.ttf', 18)
+    draw.text((28,190), 'NavModel', fill='white', font=font)
+    draw.text((28,218), 'MANAGER', fill='white', font=font)
+    wizard.save(RES / 'installer_wizard.bmp')
+    small = Image.new('RGB', (55,55), 'white')
+    icon = tile.resize((55,55), Image.Resampling.LANCZOS)
+    small.paste(icon, (0,0), icon)
+    small.save(RES / 'installer_banner.bmp')
+    (RES / 'asset-provenance.json').write_text(json.dumps({
+        'logo_source': src.name, 'logo_crop': [88,5,352,302],
+        'logo_source_sha256': hashlib.sha256(src.read_bytes()).hexdigest(),
+        'wireframe_source': 'splash-approved.png', 'wireframe_crop': [630,140,1480,735],
+        'method': 'Extract approved raster silhouette; remove paper background; resize. No redraw.'
+    }, indent=2), encoding='utf-8')
 
 if __name__ == '__main__':
     generate()
-

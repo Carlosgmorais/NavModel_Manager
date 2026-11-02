@@ -24,8 +24,10 @@ from .navigation import NavisworksStyle
 from .colors import LayerManager, resolve_layer_color
 from .icons import create_navis_icon
 from .ribbon import NavisRibbonBar
+from .branding import app_icon, StartupSplash, VERSION
+from .navcube import NavigationCube, CoordinateHUD
 from .loading_dialog import NavisLoadingDialog
-from .widgets import NavisCoordinateOverlay, NavisLayerManagerDialog, setup_nav_cube, NavisViewControlOverlay
+from .widgets import NavisCoordinateOverlay, NavisLayerManagerDialog, setup_nav_cube
 
 
 class ImportWorker(QtCore.QThread):
@@ -65,9 +67,10 @@ class ImportWorker(QtCore.QThread):
 class Window(W.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('PlantView Studio 2026 — Maquete Federada 3D')
-        self.setWindowIcon(create_navis_icon('app_logo', 64))
-        self.resize(1380, 880)
+        self.setWindowTitle('NavModel Manager')
+        self.setWindowIcon(app_icon())
+        self.resize(1536, 900)
+        self.selection_mode = False
 
         self.models = []
         self.queue = []
@@ -88,15 +91,15 @@ class Window(W.QMainWindow):
         self.current_fps = 60.0
 
         self.setStyleSheet("""
-            QMainWindow, QWidget { background: #f3f6fa; color: #26364a; font-family: 'Segoe UI'; font-size: 12px; }
-            QTreeWidget, QPlainTextEdit { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 6px; selection-background-color: #deedff; selection-color: #174f94; }
-            QTreeWidget::item { padding: 5px 3px; }
+            QMainWindow, QWidget { background: #f3f6fa; color: #26364a; font-family: 'Segoe UI'; font-size: 14px; }
+            QTreeWidget, QPlainTextEdit { background: white; alternate-background-color:#f3f6f9; border: 1px solid #e0e7ef; border-radius: 8px; padding: 6px; selection-background-color: #deedff; selection-color: #174f94; }
+            QTreeWidget::item { padding: 2px 3px; height:22px; }
             QTreeWidget::item:selected { background: #deedff; color: #174f94; border-radius: 4px; }
             QPlainTextEdit { font-family: 'Consolas'; font-size: 11px; }
             QHeaderView::section { background: #edf2f8; border: none; padding: 9px; font-weight: 600; }
             QDockWidget { font-weight: 600; }
-            QDockWidget::title { background: #e8eef6; padding: 10px 12px; border-radius: 5px; }
-            QStatusBar { background: #152b46; color: #e1ecfa; padding: 5px; font-size: 11px; }
+            QDockWidget::title { color:white; background: #0b3a66; padding: 10px 12px; border-radius: 5px; }
+            QStatusBar { background: #152b46; color: #e1ecfa; padding: 7px; font-size: 13px; }
             QComboBox { background: white; border: 1px solid #cbd7e6; border-radius: 5px; padding: 3px 7px; }
             QToolTip { background: #152b46; color: white; border: none; padding: 7px; }
             QSplitter::handle { background: #e5ebf3; }
@@ -110,8 +113,9 @@ class Window(W.QMainWindow):
 
         # 2. Viewport Area (Container for 3D View and Floating Overlays)
         viewport_container = W.QWidget()
-        vp_layout = W.QStackedLayout(viewport_container)
-        vp_layout.setStackingMode(W.QStackedLayout.StackAll)
+        self.viewport_container = viewport_container
+        vp_layout = W.QVBoxLayout(viewport_container)
+        vp_layout.setContentsMargins(0,0,0,0)
 
         self.plot = QtInteractor(viewport_container)
         vp_layout.addWidget(self.plot.interactor)
@@ -135,18 +139,12 @@ class Window(W.QMainWindow):
 
         # 3D NavCube Orientation Marker in top-right corner
         self.nav_marker, self.nav_cube = setup_nav_cube(self.plot.interactor)
-
-        # Floating View and Projection Controls Overlay (under NavCube)
-        self.view_overlay = NavisViewControlOverlay(self, viewport_container)
-        vp_layout.addWidget(self.view_overlay)
-
-        # Floating Navisworks Coordinate Overlay in bottom-left
-        self.coord_overlay = NavisCoordinateOverlay(viewport_container)
-        vp_layout.addWidget(self.coord_overlay)
+        self.cube = NavigationCube(self, self.nav_marker)
+        self.coord_overlay = CoordinateHUD(self.plot)
 
         # 1. Navisworks Ribbon Bar (Created after plot is ready)
         self.ribbon = NavisRibbonBar(self)
-        layout.addWidget(self.ribbon)
+        self.setMenuWidget(self.ribbon)
         layout.addWidget(viewport_container)
         self.setCentralWidget(central)
 
@@ -161,22 +159,17 @@ class Window(W.QMainWindow):
         # Picking installs another style; restore our navigation after its setup.
         self.plot.interactor.SetInteractorStyle(self.navigation)
 
-        # Welcome text in 3D scene
-        self.plot.add_text(
-            'PlantView Studio 2026\nAdicione modelos industriais (DWG • STEP • IFC • DXF)',
-            name='welcome',
-            font_size=13,
-            color='#2a4460'
-        )
-
         # Dock 1: Selection Tree (Left Dock)
         self.tree = W.QTreeWidget()
         self.tree.setHeaderLabels(['Hierarquia de Componentes'])
+        self.tree.setHeaderHidden(True)
+        self.tree.setSelectionMode(W.QAbstractItemView.ExtendedSelection)
         self.tree.itemChanged.connect(self.visibility_changed)
         self.tree.itemSelectionChanged.connect(self.selection_changed)
-        self.tree_dock = W.QDockWidget('Modelos e componentes', self)
+        self.tree.itemSelectionChanged.connect(self.update_properties)
+        self.tree_dock = W.QDockWidget('Árvore de Seleção', self)
         self.tree_dock.setWidget(self.tree)
-        self.tree_dock.setMinimumWidth(300)
+        self.tree_dock.setMinimumWidth(240)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.tree_dock)
 
         # Dock 2: Log and Measurement Report (Bottom Dock)
@@ -187,6 +180,22 @@ class Window(W.QMainWindow):
         self.log_dock.setWidget(self.log)
         self.log_dock.setMaximumHeight(160)
         self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self.log_dock)
+
+        self.log_dock.hide()
+        self.properties = W.QTreeWidget()
+        self.properties.setColumnCount(2)
+        self.properties.setHeaderLabels(['Propriedade', 'Valor'])
+        self.properties.setHeaderHidden(True)
+        self.properties.setColumnWidth(0, 105)
+        self.properties.setAlternatingRowColors(True)
+        self.properties_dock = W.QDockWidget('Propriedades', self)
+        self.properties_dock.setWidget(self.properties)
+        self.properties_dock.setMinimumWidth(260)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.properties_dock)
+        self.resizeDocks([self.tree_dock, self.properties_dock], [338, 314], QtCore.Qt.Horizontal)
+        self.update_properties()
+        for dock in (self.tree_dock, self.properties_dock, self.log_dock):
+            self.style_dock(dock)
 
         # Shortcuts
         self.shortcut_undo_cam = QtGui.QShortcut(QtGui.QKeySequence('Ctrl+Z'), self)
@@ -207,7 +216,20 @@ class Window(W.QMainWindow):
         self.statusBar().showMessage(
             'Pronto | Olhar: Botão esquerdo • Pan: Botão meio • Orbit: Shift + Botão meio • Zoom: Scroll • F5: Atualizar • Ctrl+Z: Desfazer câmera'
         )
-        self.log.appendPlainText('PlantView Studio 2026 v0.0.6 iniciado com renderização OpenGL acelerada por GPU.')
+        self.log.appendPlainText('NavModel Manager v0.0.7 iniciado com renderização OpenGL acelerada por GPU.')
+
+    def style_dock(self, dock):
+        bar = W.QWidget(dock)
+        bar.setObjectName('dockHeader')
+        bar.setFixedHeight(31)
+        bar.setStyleSheet('QWidget#dockHeader {background:#0b3a66;border-top-left-radius:6px;border-top-right-radius:6px;} QLabel {background:transparent;color:white;font:15px "Segoe UI";} QToolButton {color:white;background:transparent;border:0;font-size:18px;} QToolButton:hover {background:#1565a8;}')
+        layout = W.QHBoxLayout(bar); layout.setContentsMargins(10,0,5,0); layout.setSpacing(7)
+        label = W.QLabel(('◇  ' if dock is self.tree_dock else 'ⓘ  ') + dock.windowTitle())
+        layout.addWidget(label); layout.addStretch()
+        pin = W.QToolButton(); pin.setText('↗'); pin.setToolTip('Destacar / acoplar painel')
+        pin.clicked.connect(lambda: dock.setFloating(not dock.isFloating()))
+        close = W.QToolButton(); close.setText('×'); close.setToolTip('Fechar painel'); close.clicked.connect(dock.hide)
+        layout.addWidget(pin); layout.addWidget(close); dock.setTitleBarWidget(bar)
 
     def on_camera_changed(self, camera):
         """Update floating coordinate badges whenever camera moves."""
@@ -534,26 +556,29 @@ class Window(W.QMainWindow):
         self.log.appendPlainText('\n[F5 REFRESH] Verificando e recarregando modelos da maquete...')
         self.enqueue(to_reload)
 
-    def selection_changed(self):
-        """Highlights the selected actor in the 3D scene."""
-        selected_items = self.tree.selectedItems()
-        if not selected_items:
-            if self.selected_actor:
-                self.selected_actor.GetProperty().SetEdgeVisibility(False)
-                self.selected_actor = None
-                self.plot.render()
-            return
+    def selected_actors(self):
+        actors = {}
+        for item in self.tree.selectedItems():
+            actor = item.data(0, QtCore.Qt.UserRole)
+            if isinstance(actor, vtk.vtkActor):
+                actors[id(actor)] = actor
+            else:
+                model = next((m for m in self.models if m['item'] is item), None)
+                if model:
+                    actors.update({id(a):a for a in model['actors']})
+        return list(actors.values())
 
-        item = selected_items[0]
-        actor = item.data(0, QtCore.Qt.UserRole)
-        if actor and isinstance(actor, vtk.vtkActor):
-            if self.selected_actor and self.selected_actor != actor:
-                self.selected_actor.GetProperty().SetEdgeVisibility(False)
-            self.selected_actor = actor
+    def selection_changed(self):
+        for actor in getattr(self, '_highlighted', []):
+            actor.GetProperty().SetEdgeVisibility(False)
+        self._highlighted = self.selected_actors()
+        self.selected_actor = self._highlighted[0] if self._highlighted else None
+        for actor in self._highlighted:
             actor.GetProperty().SetEdgeVisibility(True)
-            actor.GetProperty().SetEdgeColor(1.0, 0.84, 0.0)  # Navisworks Gold highlight
+            actor.GetProperty().SetEdgeColor(1.0, .84, 0.0)
             actor.GetProperty().SetLineWidth(2.5)
-            self.plot.render()
+        self.update_properties()
+        self.plot.render()
 
     def visibility_changed(self, item, column):
         """Toggles model or group visibility from the selection tree."""
@@ -575,70 +600,50 @@ class Window(W.QMainWindow):
             self.dirty = True
             self.plot.render()
 
+    def sync_visibility_tree(self):
+        self.tree.blockSignals(True)
+        for model in self.models:
+            visible = any(a.GetVisibility() for a in model['actors'])
+            model['visible'] = visible
+            model['item'].setCheckState(0, QtCore.Qt.Checked if visible else QtCore.Qt.Unchecked)
+        iterator = W.QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value(); actor = item.data(0, QtCore.Qt.UserRole)
+            if isinstance(actor, vtk.vtkActor):
+                item.setCheckState(0, QtCore.Qt.Checked if actor.GetVisibility() else QtCore.Qt.Unchecked)
+            iterator += 1
+        self.tree.blockSignals(False)
+        self.dirty = True
+        self.update_properties()
+        self.plot.render()
+
     def isolate(self):
-        """Isolate: Hides everything except selected item."""
-        selected_items = self.tree.selectedItems()
-        if not selected_items:
+        chosen = {id(a) for a in self.selected_actors()}
+        if not chosen:
             return
-        target = selected_items[0]
-        for m in self.models:
-            is_match = (m['item'] is target)
-            m['item'].setCheckState(0, QtCore.Qt.Checked if is_match else QtCore.Qt.Unchecked)
+        for model in self.models:
+            for actor in model['actors']:
+                actor.SetVisibility(id(actor) in chosen)
+        self.sync_visibility_tree()
 
     def toggle_hide_selected(self):
-        """Alterna a visibilidade (oculta/exibe) do modelo ou componente selecionado (Ctrl+H)."""
-        selected_items = self.tree.selectedItems()
-        if selected_items:
-            target = selected_items[0]
-            # Caso seja o modelo raiz (arquivo federado)
-            for m in self.models:
-                if m['item'] is target:
-                    new_vis = not m['visible']
-                    m['visible'] = new_vis
-                    target.setCheckState(0, QtCore.Qt.Checked if new_vis else QtCore.Qt.Unchecked)
-                    for actor in m['actors']:
-                        actor.SetVisibility(new_vis)
-                    self.dirty = True
-                    self.plot.render()
-                    action = 'reexibido' if new_vis else 'ocultado'
-                    self.statusBar().showMessage(f'Modelo {action}: {target.text(0)} (Ctrl+H para alternar)')
-                    return
-
-            # Caso seja um nó filho (ator individual ou componente)
-            actor = target.data(0, QtCore.Qt.UserRole)
-            current_state = target.checkState(0)
-            new_state = QtCore.Qt.Checked if current_state == QtCore.Qt.Unchecked else QtCore.Qt.Unchecked
-            target.setCheckState(0, new_state)
-            is_vis = (new_state == QtCore.Qt.Checked)
-            if actor and isinstance(actor, vtk.vtkActor):
-                actor.SetVisibility(is_vis)
-                self.dirty = True
-                self.plot.render()
-                action = 'reexibido' if is_vis else 'ocultado'
-                self.statusBar().showMessage(f'Elemento {action}: {target.text(0)} (Ctrl+H para alternar)')
-                return
-
-        # Se houver selected_actor no viewport diretamente
-        if self.selected_actor and isinstance(self.selected_actor, vtk.vtkActor):
-            is_vis = not self.selected_actor.GetVisibility()
-            self.selected_actor.SetVisibility(is_vis)
-            self.dirty = True
-            self.plot.render()
-            action = 'reexibido' if is_vis else 'ocultado'
-            self.statusBar().showMessage(f'Elemento {action} (Ctrl+H para alternar)')
+        actors = self.selected_actors()
+        if not actors and self.selected_actor:
+            actors = [self.selected_actor]
+        visible = not any(a.GetVisibility() for a in actors)
+        for actor in actors:
+            actor.SetVisibility(visible)
+        self.sync_visibility_tree()
 
     def hide_selected(self):
         """Compatibilidade: chama toggle_hide_selected."""
         self.toggle_hide_selected()
 
     def show_all(self):
-        """Unhide All: Shows all models and components."""
-        for m in self.models:
-            m['item'].setCheckState(0, QtCore.Qt.Checked)
-            for actor in m['actors']:
+        for model in self.models:
+            for actor in model['actors']:
                 actor.SetVisibility(True)
-        self.plot.render()
-        self.statusBar().showMessage('Todos os modelos e componentes foram reexibidos.')
+        self.sync_visibility_tree()
 
     def on_shift_pick(self, x, y):
         """Shift + Left Click: Navisworks hierarchy drill-down selection."""
@@ -700,47 +705,105 @@ class Window(W.QMainWindow):
         if self.selected_actor and self.selected_actor != actor:
             self.selected_actor.GetProperty().SetEdgeVisibility(False)
         self.selected_actor = actor
+        self.update_properties()
         actor.GetProperty().SetEdgeVisibility(True)
         actor.GetProperty().SetEdgeColor(1.0, 0.84, 0.0)  # Navisworks Gold
         actor.GetProperty().SetLineWidth(2.5)
         self.plot.render()
 
     def select_same_layer(self):
-        """Selects all items belonging to the same layer as the active item."""
-        if not self.selected_actor or not hasattr(self.selected_actor, '_plantview_layer'):
+        if not self.selected_actor:
             return
-        target_layer = self.selected_actor._plantview_layer
-        count = 0
-        for m in self.models:
-            for act in m['actors']:
-                if hasattr(act, '_plantview_layer') and act._plantview_layer == target_layer:
-                    act.GetProperty().SetEdgeVisibility(True)
-                    act.GetProperty().SetEdgeColor(1.0, 0.84, 0.0)
-                    count += 1
-        self.plot.render()
-        self.log.appendPlainText(f'Selecionados {count} itens da camada "{target_layer}".')
+        layer = getattr(self.selected_actor, '_plantview_layer', '0')
+        self.tree.blockSignals(True)
+        self.tree.clearSelection()
+        iterator = W.QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value(); actor = item.data(0, QtCore.Qt.UserRole)
+            if isinstance(actor, vtk.vtkActor) and getattr(actor, '_plantview_layer', '0') == layer:
+                item.setSelected(True)
+            iterator += 1
+        self.tree.blockSignals(False)
+        self.selection_changed()
+
+    def update_properties(self):
+        if not hasattr(self, 'properties'):
+            return
+        self.properties.clear()
+        actor = self.selected_actor
+        general = W.QTreeWidgetItem(self.properties, ['Geral'])
+        if actor is None:
+            W.QTreeWidgetItem(general, ['Seleção', 'Nenhum elemento'])
+        else:
+            model = next((m for m in self.models if actor in m['actors']), None)
+            fields = [('Nome', getattr(actor, '_plantview_name', 'Componente')),
+                      ('Camada', getattr(actor, '_plantview_layer', '0')),
+                      ('Arquivo', Path(model['path']).name if model else ''),
+                      ('Unidades', 'm'), ('Visível', 'Sim' if actor.GetVisibility() else 'Não')]
+            for key, value in fields:
+                W.QTreeWidgetItem(general, [key, str(value)])
+            bounds = getattr(actor, '_plantview_bounds', None)
+            if bounds is None:
+                bounds = actor.GetBounds()
+            if bounds:
+                pos = W.QTreeWidgetItem(self.properties, ['Posição (global)'])
+                dim = W.QTreeWidgetItem(self.properties, ['Dimensões'])
+                for i, axis in enumerate('XYZ'):
+                    W.QTreeWidgetItem(pos, [axis, f'{(bounds[2*i]+bounds[2*i+1])/2:.4f} m'])
+                    W.QTreeWidgetItem(dim, [axis, f'{bounds[2*i+1]-bounds[2*i]:.4f} m'])
+            material = W.QTreeWidgetItem(self.properties, ['Material'])
+            W.QTreeWidgetItem(material, ['Cor RGB', str(tuple(round(c*255) for c in actor.GetProperty().GetColor()))])
+        for i in range(self.properties.topLevelItemCount()):
+            section = self.properties.topLevelItem(i)
+            section.setFirstColumnSpanned(True)
+            section.setBackground(0, QtGui.QColor('#d7dfeb'))
+            section.setBackground(1, QtGui.QColor('#d7dfeb'))
+            font = section.font(0); font.setBold(True); section.setFont(0,font)
+        general.setExpanded(True)
 
     def show_properties(self):
-        """Displays properties sheet for selected item."""
-        if not self.selected_actor:
-            W.QMessageBox.information(self, 'Propriedades', 'Nenhum elemento selecionado na árvore ou viewport.')
-            return
-        name = getattr(self.selected_actor, '_plantview_name', 'Desconhecido')
-        layer = getattr(self.selected_actor, '_plantview_layer', '0')
-        bounds = getattr(self.selected_actor, '_plantview_bounds', None)
-        pos = self.selected_actor.GetPosition()
+        self.update_properties()
+        self.properties_dock.show()
+        self.properties_dock.raise_()
 
-        info = [
-            f'Nome do Elemento: {name}',
-            f'Camada (Layer): {layer}',
-            f'Posição X, Y, Z: {pos[0]:.4f} m, {pos[1]:.4f} m, {pos[2]:.4f} m',
-        ]
-        if bounds:
-            dx = bounds[1] - bounds[0]
-            dy = bounds[3] - bounds[2]
-            dz = bounds[5] - bounds[4]
-            info.append(f'Dimensões: Largura={dx:.4f} m, Comprimento={dy:.4f} m, Altura={dz:.4f} m')
-        W.QMessageBox.information(self, 'Propriedades do Elemento', '\n'.join(info))
+    def save_as(self):
+        previous = self.project_path
+        self.project_path = None
+        self.save()
+        if self.project_path is None:
+            self.project_path = previous
+
+    def enable_selection(self):
+        self.selection_mode = self.selection_button.isChecked()
+        self.navigation.selection_mode = self.selection_mode
+
+    def select_all_items(self):
+        self.tree.selectAll()
+
+    def invert_selection(self):
+        iterator = W.QTreeWidgetItemIterator(self.tree)
+        self.tree.blockSignals(True)
+        while iterator.value():
+            item = iterator.value()
+            item.setSelected(not item.isSelected())
+            iterator += 1
+        self.tree.blockSignals(False)
+        self.selection_changed()
+        self.update_properties()
+
+    def toggle_cube(self):
+        self.cube.setVisible(not self.cube.isVisible())
+
+    def toggle_hud(self):
+        self.coord_overlay.setVisible(not self.coord_overlay.isVisible())
+
+    def toggle_activity(self):
+        self.log_dock.setVisible(not self.log_dock.isVisible())
+
+    def export_view(self):
+        path, _ = W.QFileDialog.getSaveFileName(self, 'Salvar captura 3D', 'NavModel.png', 'Imagem PNG (*.png)')
+        if path:
+            self.plot.screenshot(path)
 
     def show_layer_manager(self):
         """Opens the Appearance Profiler & Layer Manager dialog."""
@@ -810,10 +873,10 @@ class Window(W.QMainWindow):
         self.plot.render()
         info = gpu_report(self.plot)
         self.log.appendPlainText('\n' + info)
-        W.QMessageBox.information(self, 'PlantView Studio — Diagnóstico GPU', info)
+        W.QMessageBox.information(self, 'NavModel Manager — Diagnóstico GPU', info)
 
     def save(self):
-        path, _ = W.QFileDialog.getSaveFileName(self, 'Salvar projeto federado', self.project_path or 'Maquete.pvproj', 'Projeto PlantView (*.pvproj)')
+        path, _ = W.QFileDialog.getSaveFileName(self, 'Salvar projeto federado', self.project_path or 'Maquete.pvproj', 'Projeto NavModel (*.pvproj)')
         if not path:
             return False
         if not path.lower().endswith('.pvproj'):
@@ -829,7 +892,7 @@ class Window(W.QMainWindow):
             return False
 
     def open_project(self):
-        path, _ = W.QFileDialog.getOpenFileName(self, 'Abrir projeto federado', '', 'Projeto PlantView (*.pvproj)')
+        path, _ = W.QFileDialog.getOpenFileName(self, 'Abrir projeto federado', '', 'Projeto NavModel (*.pvproj)')
         if not path:
             return
         try:
@@ -857,8 +920,11 @@ class Window(W.QMainWindow):
             for actor in m['actors']:
                 self.plot.remove_actor(actor)
         self.plot.remove_actor('measure')
+        self.selected_actor = None
+        self.last_picked_actor = None
         self.models.clear()
         self.tree.clear()
+        self.update_properties()
         self.total_triangles = 0
         self.project_path = None
         self.dirty = False
@@ -882,11 +948,45 @@ class Window(W.QMainWindow):
 def main():
     configure_surface()
     app = W.QApplication(sys.argv)
-    app.setApplicationName('PlantView Studio')
-    app.setWindowIcon(create_navis_icon('app_logo', 64))
+    app.setStyle('Fusion')
+    app.setFont(QtGui.QFont('Segoe UI',10))
+    palette = QtGui.QPalette()
+    for role, color in [(QtGui.QPalette.Window,'#f3f6f9'),(QtGui.QPalette.WindowText,'#0b2f50'),
+                        (QtGui.QPalette.Base,'white'),(QtGui.QPalette.AlternateBase,'#f3f6f9'),
+                        (QtGui.QPalette.Text,'#0b2f50'),(QtGui.QPalette.Button,'#f3f6f9'),
+                        (QtGui.QPalette.ButtonText,'#0b2f50'),(QtGui.QPalette.Highlight,'#0788ff'),
+                        (QtGui.QPalette.HighlightedText,'white')]:
+        palette.setColor(role,QtGui.QColor(color))
+    app.setPalette(palette)
+    app.setApplicationName('NavModel Manager')
+    app.setWindowIcon(app_icon())
 
+    app.setApplicationVersion(VERSION)
+    app.setOrganizationName('Carlos Morais')
+    if sys.platform == 'win32':
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('CarlosMorais.NavModelManager')
+    splash = StartupSplash()
+    splash.show()
+    app.processEvents()
     window = Window()
-    window.show()
+    def reveal():
+        # Precise timer + elapsed guard ensure a MINIMUM of five visible seconds.
+        if splash.clock.elapsed() < splash.minimum_ms:
+            QtCore.QTimer.singleShot(splash.minimum_ms - splash.clock.elapsed() + 5, reveal)
+            return
+        window.startup_visible_ms = splash.clock.elapsed()
+        splash.timer.stop()
+        splash.close()
+        window.show()
+        if '--smoke-test' in sys.argv:
+            QtCore.QTimer.singleShot(600, check)
+        elif len(sys.argv) > 1 and Path(sys.argv[1]).suffix.lower() == '.pvproj':
+            data = load_project(sys.argv[1])
+            window.project_path = sys.argv[1]
+            window.restore_camera = data.get('camera')
+            window.enqueue(data['models'])
+    QtCore.QTimer.singleShot(max(0, splash.minimum_ms-splash.clock.elapsed())+5, reveal)
 
     if '--smoke-test' in sys.argv:
         import json
@@ -910,12 +1010,18 @@ def main():
                         })
                 except Exception as e:
                     report['errors'].append(f'{name}: {e}')
+            window.tree.expandToDepth(0)
+            if window.models and window.models[0]['item'].childCount():
+                window.models[0]['item'].child(0).setSelected(True)
             window.plot.view_isometric()
             window.plot.reset_camera()
             QtCore.QTimer.singleShot(1500, finish)
 
         def finish():
-            window.grab().save(str(output / 'PlantViewStudio.png'))
+            window.screen().grabWindow(int(window.winId())).save(str(output / 'NavModelManager.png'))
+            report['splash_visible_ms'] = window.startup_visible_ms
+            report['gpu'] = gpu_report(window.plot)
+            report['version'] = VERSION
             window.plot.screenshot(str(output / 'viewport.png'))
             (output / 'smoke-test.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
             window.dirty = False
@@ -923,6 +1029,6 @@ def main():
             import os
             os._exit(1 if report['errors'] else 0)
 
-        QtCore.QTimer.singleShot(600, check)
+        QtCore.QTimer.singleShot(150, lambda: splash.grab().save(str(output / "Splash.png")))
 
     return app.exec()

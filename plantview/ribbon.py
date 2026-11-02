@@ -1,293 +1,135 @@
-"""Autodesk Navisworks Manage Ribbon UI Bar.
-
-Implements the ribbon styling and button groups seen in Navisworks Manage:
-- Quick Access Toolbar (New, Open, Save, Refresh F5)
-- Tab Strip: Home, Viewpoint, Review, Display
-- Group Containers: Project, Select & Search, Visibility, Display, Tools
-"""
+"""Native Qt Ribbon based on the approved NavModel Manager reference."""
 from PySide6 import QtCore, QtGui, QtWidgets as W
 from .icons import create_navis_icon
-
+from .branding import resource
 
 class NavisRibbonGroup(W.QFrame):
-    """A vertical ribbon group panel with title label at the bottom."""
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title, parent=None):
         super().__init__(parent)
         self.setObjectName('ribbonGroup')
-        self.setStyleSheet("""
-            QFrame#ribbonGroup {
-                background-color: #ffffff;
-                border: 1px solid #e1e8f1;
-                border-radius: 8px;
-                margin: 2px;
-            }
-            QLabel#groupTitle {
-                color: #64758b;
-                font-size: 10px;
-                font-weight: 500;
-                padding-bottom: 2px;
-            }
-            QToolButton {
-                background-color: transparent;
-                border: 1px solid transparent;
-                border-radius: 8px;
-                padding: 4px;
-                font-size: 11px;
-                color: #253b55;
-            }
-            QToolButton:hover {
-                background-color: #edf5ff;
-                border: 1px solid #b8d7fc;
-            }
-            QToolButton:pressed {
-                background-color: #cce4f7;
-                border: 1px solid #2878cf;
-            }
-        """)
-
         layout = W.QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 2)
-        layout.setSpacing(2)
-
-        self.content_layout = W.QHBoxLayout()
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setSpacing(4)
+        layout.setContentsMargins(5,3,5,2); layout.setSpacing(1)
+        self.content_layout = W.QHBoxLayout(); self.content_layout.setSpacing(2)
         layout.addLayout(self.content_layout)
+        label = W.QLabel(title); label.setObjectName('groupTitle')
+        label.setAlignment(QtCore.Qt.AlignCenter); layout.addWidget(label)
 
-        title_lbl = W.QLabel(title)
-        title_lbl.setObjectName('groupTitle')
-        title_lbl.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(title_lbl)
-
-    def add_large_button(self, text: str, icon_name: str, callback, tooltip: str = '', shortcut: str = None) -> W.QToolButton:
-        btn = W.QToolButton()
-        btn.setIcon(create_navis_icon(icon_name, 32))
-        btn.setIconSize(QtCore.QSize(30, 30))
-        btn.setText(text)
-        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+    def add_large_button(self, text, icon, callback, tooltip='', shortcut=None, primary=False):
+        btn = W.QToolButton(self)
+        btn.setText(text); btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+        btn.setIcon(create_navis_icon(icon,32)); btn.setIconSize(QtCore.QSize(26,26))
+        btn.setFixedSize(82 if primary else (82 if text == 'Propriedades' else 66), 68)
+        if primary:
+            btn.setProperty('primary',True)
+            # Recolor the existing vector command icon, not the brand artwork.
+            pix = btn.icon().pixmap(32,32)
+            p = QtGui.QPainter(pix); p.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+            p.fillRect(pix.rect(), QtCore.Qt.white); p.end(); btn.setIcon(QtGui.QIcon(pix))
         btn.clicked.connect(callback)
-        if tooltip:
-            if shortcut:
-                tooltip += f' ({shortcut})'
-            btn.setToolTip(tooltip)
-        if shortcut:
-            btn.setShortcut(QtGui.QKeySequence(shortcut))
-        btn.setMinimumWidth(56)
-        btn.setMinimumHeight(64)
+        btn.setToolTip(tooltip + (f' ({shortcut})' if shortcut else ''))
+        if shortcut: btn.setShortcut(QtGui.QKeySequence(shortcut))
         self.content_layout.addWidget(btn)
         return btn
-
-    def add_small_button(self, text: str, icon_name: str, callback, tooltip: str = '', shortcut: str = None) -> W.QToolButton:
-        btn = W.QToolButton()
-        btn.setIcon(create_navis_icon(icon_name, 20))
-        btn.setIconSize(QtCore.QSize(18, 18))
-        btn.setText(text)
-        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        btn.clicked.connect(callback)
-        if tooltip:
-            if shortcut:
-                tooltip += f' ({shortcut})'
-            btn.setToolTip(tooltip)
-        if shortcut:
-            btn.setShortcut(QtGui.QKeySequence(shortcut))
-        btn.setFixedHeight(24)
-        self.content_layout.addWidget(btn)
-        return btn
-
-    def add_vertical_subgroup(self) -> W.QVBoxLayout:
-        vbox = W.QVBoxLayout()
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(2)
-        self.content_layout.addLayout(vbox)
-        return vbox
-
 
 class NavisRibbonBar(W.QWidget):
-    """Full Autodesk Navisworks Manage styled ribbon bar with tabs."""
     def __init__(self, window):
         super().__init__(window)
         self.window = window
-        self.setFixedHeight(144)
-        self.setStyleSheet("""
-            NavisRibbonBar {
-                background-color: #f3f6fa;
-                border-bottom: 1px solid #dce5ef;
-            }
-            QTabWidget::pane {
-                border-top: 1px solid #d4d4d4;
-                background-color: #f3f6fa;
-            }
-            QTabBar::tab {
-                background: #e8eef6;
-                border: 1px solid #e8eef6;
-                border-bottom: none;
-                padding: 7px 20px;
-                font-size: 11px;
-                font-weight: 500;
-                color: #405773;
-                min-width: 65px;
-            }
-            QTabBar::tab:selected {
-                background: #f3f6fa;
-                border-color: #2878cf;
-                border-top: 2px solid #2878cf;
-                color: #1765b4;
-                font-weight: 600;
-            }
-            QTabBar::tab:hover:!selected {
-                background: #ebebeb;
-            }
-        """)
-
-        main_layout = W.QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 4, 8, 6)
-        main_layout.setSpacing(0)
-
-        # Tabs
-        self.tabs = W.QTabWidget()
-        main_layout.addWidget(self.tabs)
-
-        self._build_home_tab()
-        self._build_viewpoint_tab()
-        self._build_review_tab()
-
-    def _build_home_tab(self):
-        page = W.QWidget()
-        layout = W.QHBoxLayout(page)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(6)
-
-        # 1. Project Group
-        grp_proj = NavisRibbonGroup('PROJETO', page)
-        grp_proj.add_large_button('Adicionar', 'append', self.window.add_files, 'Adicionar modelos na maquete federada', 'Ctrl+I')
+        self.setObjectName('navRibbon'); self.setFixedHeight(177)
+        self.setStyleSheet('''
+            QWidget#navRibbon {background:#062c50;}
+            QWidget#quickAccess, QWidget#quickAccess QLabel {background:#062c50; color:white;}
+            QWidget#quickAccess QToolButton {background:transparent; color:white; border:0; border-radius:4px; padding:3px;}
+            QWidget#quickAccess QToolButton:hover {background:#1565a8;}
+            QTabWidget::tab-bar {left:62px;}
+            QTabWidget::pane {border:1px solid #bacbdd; background:#f3f6f9; border-radius:6px;}
+            QTabBar::tab {background:#062c50; color:white; border:0; padding:5px 18px; font-size:15px;}
+            QTabBar::tab:selected {background:#f3f6f9; color:#082d50; border-top-left-radius:6px; border-top-right-radius:6px; font-weight:600;}
+            QTabBar::tab:hover:!selected {background:#155183;}
+            QFrame#ribbonGroup {background:#f8fafc; border:0; border-right:1px solid #cbd5e1;}
+            QLabel#groupTitle {background:transparent; color:#092c4e; font-size:12px; font-weight:600;}
+            QToolButton {color:#0b2f50; background:transparent; border:1px solid transparent; border-radius:5px; padding:2px; font-size:12px;}
+            QToolButton:hover {background:#d9edff; border:1px solid #9acaef;}
+            QToolButton:checked, QToolButton:pressed {background:#a2d7f6; border-color:#81bde7;}
+            QToolButton[primary="true"] {color:white; background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0788ff,stop:1 #0049bd); font-size:12px;}
+            QToolButton[primary="true"]:hover {background:#1979dd;}
+            QScrollArea {border:0; background:#f3f6f9;}
+        ''')
+        main = W.QVBoxLayout(self); main.setContentsMargins(3,0,3,4); main.setSpacing(0)
+        header = W.QWidget(); header.setObjectName('quickAccess')
+        row = W.QHBoxLayout(header); row.setContentsMargins(7,0,8,0); row.setSpacing(10)
+        self.brand_button = W.QToolButton(); self.brand_button.setObjectName('nvMenu')
+        self.brand_button.setAccessibleName('Menu NV'); self.brand_button.setToolTip('NavModel Manager — Menu do projeto')
+        self.brand_button.setIcon(QtGui.QIcon(resource('logo-white.png')))
+        self.brand_button.setIconSize(QtCore.QSize(29,32)); self.brand_button.setFixedSize(64,39)
+        self.brand_button.setPopupMode(W.QToolButton.InstantPopup)
+        menu = W.QMenu(self.brand_button)
+        for title, callback in [('Novo projeto',window.new_project),('Abrir projeto...',window.open_project),('Salvar projeto...',window.save),('Adicionar modelos...',window.add_files),('Sair',window.close)]:
+            menu.addAction(title, callback)
+        self.brand_button.setMenu(menu); row.addWidget(self.brand_button)
+        for text, icon, callback in [('Novo','new',window.new_project),('Abrir','open',window.open_project),('Salvar','save',window.save),('Desfazer vista','reset',window.undo_camera)]:
+            b = W.QToolButton(); b.setIcon(create_navis_icon(icon,24)); b.setToolTip(text)
+            pix=b.icon().pixmap(24,24); p=QtGui.QPainter(pix); p.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn); p.fillRect(pix.rect(),QtCore.Qt.white); p.end(); b.setIcon(QtGui.QIcon(pix))
+            b.clicked.connect(callback); row.addWidget(b)
+        row.addStretch()
+        title = W.QLabel('NavModel Manager'); title.setStyleSheet('font-size:14px; font-weight:600;')
+        row.addWidget(title); row.addStretch()
+        main.addWidget(header)
+        self.tabs = W.QTabWidget(); main.addWidget(self.tabs)
+        # Reserved corner space puts Início to the right of NV, never underneath it.
         
-        v_proj = grp_proj.add_vertical_subgroup()
-        b_ref = W.QToolButton()
-        b_ref.setIcon(create_navis_icon('refresh', 18))
-        b_ref.setText('Atualizar')
-        b_ref.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        b_ref.clicked.connect(self.window.refresh_models)
-        b_ref.setToolTip('Atualizar modelos modificados (F5)')
-        b_ref.setShortcut(QtGui.QKeySequence('F5'))
-        v_proj.addWidget(b_ref)
+        home = self.page('Início')
+        project = self.group(home, 'Projeto')
+        self.append_button = project.add_large_button('Append','append',window.add_files,'Adicionar modelos à maquete','Ctrl+I',True)
+        self.refresh_button = project.add_large_button('Refresh','refresh',window.refresh_models,'Recarregar modelos mantendo câmera e visibilidade','F5',True)
+        for args in [('Novo','new',window.new_project,'Novo projeto','Ctrl+N'),('Abrir','open',window.open_project,'Abrir projeto','Ctrl+O'),('Salvar','save',window.save,'Salvar projeto','Ctrl+S'),('Salvar\ncomo','save',window.save_as,'Salvar em outro arquivo',None)]:
+            project.add_large_button(*args)
+        sel = self.group(home,'Seleção')
+        b = sel.add_large_button('Selecionar','select',window.enable_selection,'Seleção direta por clique; arrastar continua navegando')
+        b.setCheckable(True); window.selection_button = b
+        sel.add_large_button('Selecionar\ntudo','tree',window.select_all_items,'Selecionar todos os componentes')
+        sel.add_large_button('Selecionar\nigual','select',window.select_same_layer,'Selecionar a mesma camada')
+        sel.add_large_button('Inverter\nseleção','tree',window.invert_selection,'Inverter seleção na árvore')
+        vis = self.group(home,'Visibilidade')
+        for t,i,c in [('Ocultar','hide',window.toggle_hide_selected),('Mostrar','unhide',window.show_all),('Isolar','isolate',window.isolate)]:
+            vis.add_large_button(t,i,c)
+        nav = self.group(home,'Navegação')
+        nav.add_large_button('View\nCube','isolate',window.toggle_cube,'Mostrar ou ocultar cubo clicável')
+        nav.add_large_button('HUD','properties',window.toggle_hud,'Coordenadas da câmera')
+        nav.add_large_button('Enquadrar','reset',window.plot.reset_camera,'Enquadrar modelos','F')
+        tool = self.group(home,'Ferramentas')
+        for t,i,c in [('Propriedades','properties',window.show_properties),('Camadas','layers',window.show_layer_manager),('Medir','measure',window.toggle_measure),('Opções','gpu',window.show_gpu_info)]:
+            tool.add_large_button(t,i,c)
+        view = self.page('Visualização')
+        g = self.group(view,'Câmera')
+        for t,i,c in [('Isométrica','reset',window.view_isometric_smart),('Topo','reset',window.view_top_smart),('Frente','reset',window.view_front_smart),('Direita','reset',window.view_right_smart),('Perspectiva','isolate',window.set_perspective),('Ortogonal','isolate',window.set_orthogonal),('Desfazer\nvista','reset',window.undo_camera)]: g.add_large_button(t,i,c)
+        review = self.page('Revisão'); g = self.group(review,'Medição')
+        g.add_large_button('Medir','measure',window.toggle_measure,'Medir entre pontos','M')
+        g.add_large_button('Limpar','reset',window.clear_measures)
+        # Preserve honest capability boundaries: unimplemented features are visibly disabled.
+        animation = self.page('Animação'); g = self.group(animation,'Animação')
+        b = g.add_large_button('Animação','look',lambda:None,'Não disponível nesta versão'); b.setEnabled(False)
+        panels = self.page('Vista'); g = self.group(panels,'Painéis')
+        g.add_large_button('Árvore','tree',window.toggle_selection_tree)
+        g.add_large_button('Propriedades','properties',window.show_properties)
+        g.add_large_button('Atividade','properties',window.toggle_activity)
+        output = self.page('Saída'); g = self.group(output,'Exportação')
+        g.add_large_button('Captura','save',window.export_view,'Salvar imagem do viewport 3D')
+        tools = self.page('Ferramentas'); g = self.group(tools,'Ferramentas')
+        g.add_large_button('Camadas','layers',window.show_layer_manager)
+        g.add_large_button('Diagnóstico\nGPU','gpu',window.show_gpu_info)
+        settings = self.page('Configurações'); g = self.group(settings,'Unidade para arquivos sem unidade')
+        window.units = W.QComboBox()
+        for label,scale in [('mm',.001),('m',1.),('cm',.01),('pol',.0254)]: window.units.addItem(label,scale)
+        g.content_layout.addWidget(window.units)
 
-        b_rst = W.QToolButton()
-        b_rst.setIcon(create_navis_icon('reset', 18))
-        b_rst.setText('Enquadrar')
-        b_rst.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        b_rst.clicked.connect(self.window.plot.reset_camera)
-        b_rst.setToolTip('Enquadrar todos os modelos (F)')
-        b_rst.setShortcut(QtGui.QKeySequence('F'))
-        v_proj.addWidget(b_rst)
+    def page(self,title):
+        scroll = W.QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        page = W.QWidget(); row = W.QHBoxLayout(page); row.setContentsMargins(5,2,5,2); row.setSpacing(2)
+        row.setSizeConstraint(W.QLayout.SetMinimumSize); row.addStretch()
+        scroll.setWidget(page); self.tabs.addTab(scroll,title)
+        return row
 
-        # Units dropdown
-        units_row = W.QHBoxLayout()
-        units_row.addWidget(W.QLabel('Unid:'))
-        self.window.units = W.QComboBox()
-        for label, scale in [('mm', 0.001), ('m', 1.0), ('cm', 0.01), ('pol', 0.0254)]:
-            self.window.units.addItem(label, scale)
-        self.window.units.setToolTip('Unidade de escala para arquivos sem unidade')
-        units_row.addWidget(self.window.units)
-        v_proj.addLayout(units_row)
-        layout.addWidget(grp_proj)
-
-        # 2. Select & Search Group
-        grp_sel = NavisRibbonGroup('SELEÇÃO', page)
-        grp_sel.add_large_button('Select', 'select', lambda: None, 'Modo de seleção de componentes (Shift+Clique)')
-        grp_sel.add_large_button('Selection\nTree', 'tree', self.window.toggle_selection_tree, 'Alternar árvore de componentes')
-        v_sel = grp_sel.add_vertical_subgroup()
-        b_selall = W.QToolButton()
-        b_selall.setText('Select All')
-        b_selall.clicked.connect(self.window.show_all)
-        v_sel.addWidget(b_selall)
-        b_selsame = W.QToolButton()
-        b_selsame.setText('Select Same')
-        b_selsame.clicked.connect(self.window.select_same_layer)
-        v_sel.addWidget(b_selsame)
-        layout.addWidget(grp_sel)
-
-        # 3. Visibility Group
-        grp_vis = NavisRibbonGroup('VISIBILIDADE', page)
-        grp_vis.add_large_button('Hide', 'hide', self.window.toggle_hide_selected, 'Ocultar ou reexibir item selecionado', 'Ctrl+H')
-        grp_vis.add_large_button('Hide\nUnselected', 'isolate', self.window.isolate, 'Isolar itens selecionados')
-        grp_vis.add_large_button('Unhide\nAll', 'unhide', self.window.show_all, 'Mostrar todos os componentes')
-        layout.addWidget(grp_vis)
-
-        # 4. Display Group
-        grp_disp = NavisRibbonGroup('APARÊNCIA', page)
-        grp_disp.add_large_button('Properties', 'properties', self.window.show_properties, 'Propriedades do item selecionado')
-        grp_disp.add_large_button('Appearance\nProfiler', 'layers', self.window.show_layer_manager, 'Gerenciador de Cores e Camadas DWG')
-        layout.addWidget(grp_disp)
-
-        # 5. Tools Group
-        grp_tools = NavisRibbonGroup('FERRAMENTAS', page)
-        grp_tools.add_large_button('Measure', 'measure', self.window.toggle_measure, 'Medição 3D ponto-a-ponto', 'M')
-        grp_tools.add_large_button('GPU\nDiagnostics', 'gpu', self.window.show_gpu_info, 'Diagnóstico de hardware OpenGL e memória')
-        layout.addWidget(grp_tools)
-
-        layout.addStretch()
-        self.tabs.addTab(page, 'Início')
-
-    def _build_viewpoint_tab(self):
-        page = W.QWidget()
-        layout = W.QHBoxLayout(page)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(6)
-
-        # Camera Navigate Group
-        grp_nav = NavisRibbonGroup('Navigate', page)
-        grp_nav.add_large_button('Look\nAround', 'look', lambda: None, 'Olhar livremente ao redor (Botão esquerdo)')
-        grp_nav.add_large_button('Orbit', 'orbit', lambda: None, 'Ferramenta Orbital (Shift + Botão do meio)')
-        grp_nav.add_large_button('Undo\nView', 'reset', self.window.undo_camera, 'Desfazer vista anterior da câmera', 'Ctrl+Z')
-        layout.addWidget(grp_nav)
-
-        # Camera Views Group
-        grp_views = NavisRibbonGroup('Views', page)
-        grp_views.add_large_button('Home\nView', 'reset', self.window.view_isometric_smart, 'Vista isométrica padrão')
-        
-        v_views = grp_views.add_vertical_subgroup()
-        b_top = W.QToolButton()
-        b_top.setText('Top (Superior)')
-        b_top.clicked.connect(self.window.view_top_smart)
-        v_views.addWidget(b_top)
-
-        b_front = W.QToolButton()
-        b_front.setText('Front (Frontal)')
-        b_front.clicked.connect(self.window.view_front_smart)
-        v_views.addWidget(b_front)
-
-        b_right = W.QToolButton()
-        b_right.setText('Right (Lateral)')
-        b_right.clicked.connect(self.window.view_right_smart)
-        v_views.addWidget(b_right)
-        layout.addWidget(grp_views)
-
-        # Camera Projection Group
-        grp_proj = NavisRibbonGroup('Camera', page)
-        v_cam = grp_proj.add_vertical_subgroup()
-        b_persp = W.QToolButton()
-        b_persp.setText('Perspectiva')
-        b_persp.clicked.connect(self.window.set_perspective)
-        v_cam.addWidget(b_persp)
-        b_ortho = W.QToolButton()
-        b_ortho.setText('Ortogonal')
-        b_ortho.clicked.connect(self.window.set_orthogonal)
-        v_cam.addWidget(b_ortho)
-        layout.addWidget(grp_proj)
-
-        layout.addStretch()
-        self.tabs.addTab(page, 'Viewpoint')
-
-    def _build_review_tab(self):
-        page = W.QWidget()
-        layout = W.QHBoxLayout(page)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(6)
-
-        grp_meas = NavisRibbonGroup('Measure', page)
-        grp_meas.add_large_button('Point to\nPoint', 'measure', self.window.toggle_measure, 'Medir distância entre 2 superfícies')
-        grp_meas.add_large_button('Clear', 'reset', self.window.clear_measures, 'Limpar medições')
-        layout.addWidget(grp_meas)
-
-        layout.addStretch()
-        self.tabs.addTab(page, 'Review')
+    def group(self,row,title):
+        g = NavisRibbonGroup(title); row.insertWidget(row.count()-1,g); return g

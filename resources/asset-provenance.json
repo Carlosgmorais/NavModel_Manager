@@ -1,0 +1,18 @@
+{
+  "logo_source": "identity-approved.png",
+  "logo_crop": [
+    88,
+    5,
+    352,
+    302
+  ],
+  "logo_source_sha256": "4fb1b7927e95df07c88718f9e8e22dd0c46fabc1e5025ce4483f3181b128b58a",
+  "wireframe_source": "splash-approved.png",
+  "wireframe_crop": [
+    630,
+    140,
+    1480,
+    735
+  ],
+  "method": "Extract approved raster silhouette; remove paper background; resize. No redraw."
+}
