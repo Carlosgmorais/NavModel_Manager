@@ -851,6 +851,9 @@ class Window(W.QMainWindow):
     def toggle_measure(self):
         self.measure_mode = not self.measure_mode
         self.measure_tool.start = None
+        if not self.measure_mode:
+            self.plot.remove_actor('measure-snap')
+            self.plot.interactor.unsetCursor()
         self.statusBar().showMessage('Medir: clique no primeiro ponto, mova o cursor e clique no segundo. Esc cancela.' if self.measure_mode else 'Medição desativada.')
 
     def clear_measures(self):

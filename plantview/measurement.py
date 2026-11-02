@@ -9,23 +9,26 @@ class MeasurementTool(QtCore.QObject):
     def __init__(self,window):
         super().__init__(window)
         self.window=window;self.start=None;self.names=[];self.last=0
-        self.picker=vtk.vtkCellPicker();self.picker.SetTolerance(.005)
+        from .surface_picker import SurfacePicker
+        self.surface_picker=SurfacePicker(window)
+        self.hover=None
         window.plot.interactor.installEventFilter(self)
         self.panel=W.QTreeWidget();self.panel.setHeaderLabels(['Medição','m'])
         self.dock=W.QDockWidget('Ferramentas de medição',window);self.dock.setWidget(self.panel)
         window.addDockWidget(QtCore.Qt.LeftDockWidgetArea,self.dock);self.dock.hide()
     def clear(self):
         for name in self.names:self.window.plot.remove_actor(name,render=False)
-        self.names=[];self.start=None;self.panel.clear();self.window.plot.render()
+        self.names=[];self.start=None;self.panel.clear();self.window.plot.remove_actor('measure-snap',render=False);self.window.plot.render()
     def pick(self,event):
         widget=self.window.plot.interactor;rw=widget.GetRenderWindow();width,height=rw.GetSize()
         x=event.position().x()*width/widget.width();y=(widget.height()-event.position().y())*height/widget.height()
-        if self.picker.Pick(x,y,0,self.window.plot.renderer):return np.array(self.picker.GetPickPosition())
+        if self.window.cube.contains(x,y):return None
+        return self.surface_picker.pick(x,y)
     def eventFilter(self,obj,event):
         if not self.window.measure_mode:return False
         kind=event.type()
         if kind==QtCore.QEvent.KeyPress and event.key()==QtCore.Qt.Key_Escape:
-            self.start=None;self.window.measure_mode=False;return True
+            self.start=None;self.window.measure_mode=False;self.window.plot.remove_actor('measure-snap');self.window.plot.interactor.unsetCursor();return True
         if kind==QtCore.QEvent.MouseButtonPress and event.button()==QtCore.Qt.LeftButton:
             point=self.pick(event)
             if point is not None:
@@ -33,10 +36,16 @@ class MeasurementTool(QtCore.QObject):
                 else:self.draw(point);self.start=None
             return True
         if kind==QtCore.QEvent.MouseButtonRelease and event.button()==QtCore.Qt.LeftButton:return True
-        if kind==QtCore.QEvent.MouseMove and self.start is not None:
+        if kind==QtCore.QEvent.MouseMove:
             if time.monotonic()-self.last>.025:
                 point=self.pick(event)
-                if point is not None:self.draw(point)
+                self.hover=point
+                self.window.plot.interactor.setCursor(QtCore.Qt.CrossCursor if point is not None else QtCore.Qt.ForbiddenCursor)
+                self.window.plot.remove_actor('measure-snap',render=False)
+                if point is not None:
+                    self.window.plot.add_points([point],name='measure-snap',color='#ffb000',point_size=12,render_points_as_spheres=True,pickable=False,reset_camera=False,render=False)
+                    if self.start is not None:self.draw(point)
+                    else:self.window.plot.render()
                 self.last=time.monotonic()
             return True
         return False
