@@ -16,3 +16,5 @@ acadrust = { path = "vendor/acadrust" }
 [profile.release]
 opt-level = 2
 debug = false
+lto = "off"
+codegen-units = 16

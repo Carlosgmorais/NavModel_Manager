@@ -207,7 +207,7 @@ class Window(W.QMainWindow):
         self.statusBar().showMessage(
             'Pronto | Olhar: Botão esquerdo • Pan: Botão meio • Orbit: Shift + Botão meio • Zoom: Scroll • F5: Atualizar • Ctrl+Z: Desfazer câmera'
         )
-        self.log.appendPlainText('PlantView Studio 2026 v0.0.5 iniciado com renderização OpenGL acelerada por GPU.')
+        self.log.appendPlainText('PlantView Studio 2026 v0.0.6 iniciado com renderização OpenGL acelerada por GPU.')
 
     def on_camera_changed(self, camera):
         """Update floating coordinate badges whenever camera moves."""
@@ -468,12 +468,18 @@ class Window(W.QMainWindow):
             child.setCheckState(0, QtCore.Qt.Checked if record['visible'] else QtCore.Qt.Unchecked)
             child.setData(0, QtCore.Qt.UserRole, actor)
             root.addChild(child)
-            for component_name in getattr(actor, '_plantview_names', []):
-                component = W.QTreeWidgetItem([component_name])
-                component.setFlags(component.flags() | QtCore.Qt.ItemIsUserCheckable)
-                component.setCheckState(0, QtCore.Qt.Checked if record['visible'] else QtCore.Qt.Unchecked)
-                component.setData(0, QtCore.Qt.UserRole, actor)
-                child.addChild(component)
+            subnames = getattr(actor, '_plantview_names', [])
+            if len(subnames) <= 150:
+                for component_name in subnames:
+                    component = W.QTreeWidgetItem([component_name])
+                    component.setFlags(component.flags() | QtCore.Qt.ItemIsUserCheckable)
+                    component.setCheckState(0, QtCore.Qt.Checked if record['visible'] else QtCore.Qt.Unchecked)
+                    component.setData(0, QtCore.Qt.UserRole, actor)
+                    child.addChild(component)
+            elif subnames:
+                summary_child = W.QTreeWidgetItem([f'{len(subnames)} componentes agrupados'])
+                summary_child.setFlags(summary_child.flags() & ~QtCore.Qt.ItemIsSelectable)
+                child.addChild(summary_child)
 
         self.log.appendPlainText(
             f"GPU: {stats['original_parts']} peças processadas -> {stats['gpu_actors']} atores GPU, "
@@ -495,7 +501,7 @@ class Window(W.QMainWindow):
         self.tree.blockSignals(False)
         self.plot.remove_actor('welcome')
 
-        if previous is None and record['visible']:
+        if previous is None and record['visible'] and len(self.models) == 1:
             self.reset_camera_navisworks()
 
         self.dirty = True
@@ -914,7 +920,8 @@ def main():
             (output / 'smoke-test.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
             window.dirty = False
             window.close()
-            app.exit(1 if report['errors'] else 0)
+            import os
+            os._exit(1 if report['errors'] else 0)
 
         QtCore.QTimer.singleShot(600, check)
 

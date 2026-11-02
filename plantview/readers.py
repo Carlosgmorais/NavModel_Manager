@@ -1,4 +1,5 @@
 """Readers return geometry in metres, preserving world placement and original CAD colors."""
+import base64
 import json
 import hashlib
 import shutil
@@ -192,7 +193,8 @@ def read_dwg(
         used_cache = False
         if not force_reload and cache_file.is_file():
             try:
-                cached_data = json.loads(cache_file.read_text(encoding='utf-8-sig'))
+                with open(cache_file, 'r', encoding='utf-8-sig') as f:
+                    cached_data = json.load(f)
                 cov = cached_data.get('coverage', {})
                 # Discard cache if empty or if invalid
                 if cov.get('status') == 'empty' or (cov.get('total_solids_found', 0) > 0 and len(cached_data.get('meshes', [])) == 0):
@@ -239,7 +241,8 @@ def read_dwg(
                 progress_callback(55.0, f'Loading {file_name} ...')
 
         try:
-            data = json.loads(result.read_text(encoding='utf-8-sig'))
+            with open(result, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
         except (ValueError, OSError):
             cache_file.unlink(missing_ok=True)
             raise ValueError('Geometria DWG inválida. Tente abrir novamente para reconstruir o cache.')
@@ -276,14 +279,28 @@ def read_dwg(
 
     for i, m in enumerate(meshes):
         points = m.get('points')
-        if not points:
-            continue
-        pts = np.asarray(points, dtype=np.float32)
+        if points:
+            pts = np.asarray(points, dtype=np.float32)
+        else:
+            b64 = m.get('points_b64')
+            if b64:
+                pts = np.frombuffer(base64.b64decode(b64), dtype=np.float32).reshape(-1, 3).copy()
+            else:
+                continue
+
         if scale != 1.0:
             pts *= np.float32(scale)
 
-        raw_faces = m.get('faces', [])
-        faces_arr = np.asarray(raw_faces, dtype=np.int64)
+        raw_faces = m.get('faces')
+        if raw_faces is not None and len(raw_faces) > 0:
+            faces_arr = np.asarray(raw_faces, dtype=np.int64)
+        else:
+            fb64 = m.get('faces_b64')
+            if fb64:
+                faces_arr = np.frombuffer(base64.b64decode(fb64), dtype=np.int32).astype(np.int64)
+            else:
+                faces_arr = np.empty(0, dtype=np.int64)
+
         mesh = pv.PolyData(pts, faces_arr)
         try:
             if len(faces_arr) > 0 and faces_arr[0] > 4:

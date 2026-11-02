@@ -12,12 +12,46 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::BufWriter;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 struct Mesh {
     name: String,
     color: [u8; 3],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     points: Vec<[f64; 3]>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     faces: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    points_b64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    faces_b64: Option<String>,
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+
+        let triple = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+
+        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -240,6 +274,7 @@ fn decode_proxy_mesh(payload: &[u8], matrix: Matrix4, color: [u8; 3], name: &str
             color,
             points,
             faces,
+            ..Default::default()
         });
         true
     } else {
@@ -659,6 +694,7 @@ fn reconstruct_fitting_from_primitives(
             color,
             points: pts,
             faces,
+            ..Default::default()
         });
         return true;
     }
@@ -858,6 +894,7 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                         color,
                         points,
                         faces,
+                        ..Default::default()
                     });
                 }
             }
@@ -912,11 +949,18 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                 color,
                 points: pts,
                 faces,
+                ..Default::default()
             });
         }
     }
 
     out.meshes.len() > initial_count
+}
+
+fn push_diagnostic(out: &mut Output, diag: EntityDiagnostic) {
+    if !diag.status.starts_with("SUCCESS") || out.diagnostics.len() < 50 {
+        out.diagnostics.push(diag);
+    }
 }
 
 /// Process conventional solid entities (Solid3D, Body, Region, Surface)
@@ -985,6 +1029,7 @@ fn process_solid_entity(
                     color,
                     points,
                     faces: local.faces.clone(),
+                    ..Default::default()
                 });
             }
             diag.parse_result = "Cached".to_string();
@@ -993,7 +1038,7 @@ fn process_solid_entity(
             diag.triangles = total_t;
             diag.bounds = compute_bounds(&all_points);
             out.coverage.acis_success += 1;
-            out.diagnostics.push(diag);
+            push_diagnostic(out, diag);
             return;
         }
         Some(None) => true,
@@ -1109,6 +1154,7 @@ fn process_solid_entity(
                         color,
                         points,
                         faces: local.faces.clone(),
+                        ..Default::default()
                     });
                 }
                 diag.missing_faces = total_missing;
@@ -1119,7 +1165,7 @@ fn process_solid_entity(
                 acis_cache.insert(common_handle, Some(local_meshes));
                 diag.status = "SUCCESS_ACIS_NATIVE".to_string();
                 out.coverage.acis_success += 1;
-                out.diagnostics.push(diag);
+                push_diagnostic(out, diag);
                 return;
             } else if !bounds_mismatch {
                 diag.notes = format!("ACIS corpos vazios: loss={:?}", loss);
@@ -1156,7 +1202,7 @@ fn process_solid_entity(
                 diag.bounds = compute_bounds(&all_fallback_pts);
                 diag.notes = format!("Recuperado via proxy graphic_data: {} malhas", added);
                 out.coverage.proxy_fallback += 1;
-                out.diagnostics.push(diag);
+                push_diagnostic(out, diag);
                 return;
             }
         }
@@ -1189,9 +1235,10 @@ fn process_solid_entity(
                     color,
                     points: wire_pts,
                     faces,
+                    ..Default::default()
                 });
                 out.coverage.wire_fallback += 1;
-                out.diagnostics.push(diag);
+                push_diagnostic(out, diag);
                 return;
             }
         }
@@ -1206,7 +1253,7 @@ fn process_solid_entity(
         "Falha ao reconstruir solido 3D: handle {:X}, layer {}. Sem geometria recuperavel.",
         common_handle, common_layer
     ));
-    out.diagnostics.push(diag);
+    push_diagnostic(out, diag);
 }
 
 fn walk(
@@ -1375,6 +1422,7 @@ fn walk(
                     color,
                     points,
                     faces,
+                    ..Default::default()
                 });
                 return;
             }
@@ -1407,6 +1455,7 @@ fn walk(
                     color,
                     points,
                     faces,
+                    ..Default::default()
                 });
                 return;
             }
@@ -1430,6 +1479,7 @@ fn walk(
             color,
             points,
             faces,
+            ..Default::default()
         });
         return;
     }
@@ -1729,11 +1779,78 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     for (kind, count) in &out.skipped {
         out.warnings.push(format!("{} entidade(s) {} ignorada(s)", count, kind));
     }
+
+    if out.meshes.len() > 300 {
+        let original_count = out.meshes.len();
+        let mut batches: Vec<Mesh> = Vec::new();
+        let mut map: HashMap<(String, [u8; 3]), usize> = HashMap::new();
+        for m in std::mem::take(&mut out.meshes) {
+            let layer = if let Some(pos) = m.name.find(" | ") {
+                let right = &m.name[pos + 3..];
+                right.split('#').next().unwrap_or(right).trim().to_string()
+            } else {
+                "0".to_string()
+            };
+            let key = (layer.clone(), m.color);
+            let target_idx = match map.get(&key) {
+                Some(&idx) if batches[idx].points.len() + m.points.len() < 500_000 => idx,
+                _ => {
+                    let idx = batches.len();
+                    batches.push(Mesh {
+                        name: format!("BATCH | {}", layer),
+                        color: m.color,
+                        points: Vec::new(),
+                        faces: Vec::new(),
+                        ..Default::default()
+                    });
+                    map.insert(key, idx);
+                    idx
+                }
+            };
+            let entry = &mut batches[target_idx];
+            let pt_offset = entry.points.len();
+            entry.points.extend(m.points);
+            let mut i = 0;
+            while i < m.faces.len() {
+                let n = m.faces[i];
+                entry.faces.push(n);
+                for k in 0..n {
+                    entry.faces.push(m.faces[i + 1 + k] + pt_offset);
+                }
+                i += 1 + n;
+            }
+        }
+        out.meshes = batches;
+        eprintln!(
+            "[plantview-dwg] Otimização: {} malhas agrupadas em {} lotes GPU por camada/cor.",
+            original_count,
+            out.meshes.len()
+        );
+    }
+
     for m in &mut out.meshes {
-        for p in &mut m.points {
-            p[0] = (p[0] * 100.0).round() * 0.01;
-            p[1] = (p[1] * 100.0).round() * 0.01;
-            p[2] = (p[2] * 100.0).round() * 0.01;
+        if m.points.len() > 50 {
+            let mut p_bytes = Vec::with_capacity(m.points.len() * 12);
+            for p in &m.points {
+                p_bytes.extend_from_slice(&(p[0] as f32).to_le_bytes());
+                p_bytes.extend_from_slice(&(p[1] as f32).to_le_bytes());
+                p_bytes.extend_from_slice(&(p[2] as f32).to_le_bytes());
+            }
+            m.points_b64 = Some(base64_encode(&p_bytes));
+            m.points.clear();
+
+            let mut f_bytes = Vec::with_capacity(m.faces.len() * 4);
+            for &f in &m.faces {
+                f_bytes.extend_from_slice(&(f as i32).to_le_bytes());
+            }
+            m.faces_b64 = Some(base64_encode(&f_bytes));
+            m.faces.clear();
+        } else {
+            for p in &mut m.points {
+                p[0] = (p[0] * 100.0).round() * 0.01;
+                p[1] = (p[1] * 100.0).round() * 0.01;
+                p[2] = (p[2] * 100.0).round() * 0.01;
+            }
         }
     }
     serde_json::to_writer(BufWriter::with_capacity(4 * 1024 * 1024, File::create(&args[2])?), &out)?;

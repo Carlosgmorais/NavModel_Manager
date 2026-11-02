@@ -1,4 +1,4 @@
-# Build script for PlantView Studio 0.0.5 on Windows 11 x64
+# Build script for PlantView Studio 0.0.6 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
@@ -63,7 +63,7 @@ $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  PLANTVIEW STUDIO 0.0.5 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  PLANTVIEW STUDIO 0.0.6 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
     Write-Host "Cargo:  $cargoExe"
@@ -175,7 +175,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'PlantView_Studio_0.0.5_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'PlantView_Studio_0.0.6_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

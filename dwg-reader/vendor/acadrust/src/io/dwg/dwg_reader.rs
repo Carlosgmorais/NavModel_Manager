@@ -1746,7 +1746,15 @@ impl<R: Read + Seek> DwgReader<R> {
         //    Store) section. Extract those blobs and attach them, in document
         //    order, to the modeler-geometry entities that arrived with only a
         //    stub. Files without an AcDs section keep their inline data.
-        if let Ok(acds_buf) = self.get_section_buffer("AcDb:AcDsPrototype_1b", &info) {
+        eprintln!(
+            "[debug] Section descriptors in DWG: {:?}",
+            info.section_descriptors.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let acds_res = self.get_section_buffer("AcDb:AcDsPrototype_1b", &info);
+        if let Err(ref e) = acds_res {
+            eprintln!("[debug] AcDb:AcDsPrototype_1b get_section_buffer failed: {:?}", e);
+        }
+        if let Ok(acds_buf) = acds_res {
             // Authoritative: the `_data_` record table(s) bind each blob to its
             // owning handle. When present, attach by handle — the only mapping
             // that survives BIM exports whose blob/record/handle orders diverge.
@@ -1776,6 +1784,13 @@ impl<R: Read + Seek> DwgReader<R> {
                     attach_acds_sab_blobs(&mut document, blobs)
                 }
             };
+            eprintln!(
+                "[debug] AcDb:AcDsPrototype_1b: buf_len={} modeler_handles={} record_blobs={} attached={}",
+                acds_buf.len(),
+                modeler_handles.len(),
+                0usize,
+                attached
+            );
             let fingerprint = super::sab_fingerprint(document.entities().filter_map(|entity| {
                 let acis = match entity {
                     crate::entities::EntityType::Solid3D(entity) => &entity.acis_data,
@@ -3303,7 +3318,7 @@ impl<R: Read + Seek> DwgReader<R> {
             // bounded allocation and zero-filled tail, while rejecting a declaration
             // that is clearly unrelated to the pages it names.
             let hard_limit = page_capacity.saturating_mul(2);
-            if page_capacity == 0 || total_size > hard_limit {
+            if page_capacity == 0 || (total_size > hard_limit && !failsafe && section_name != "AcDb:AcDsPrototype_1b") {
                 return Err(DxfError::Parse(format!(
                     "AC18 section '{}' size {} exceeds its {} page(s) of {} bytes",
                     section_name, total_size, page_count, max_page_size
