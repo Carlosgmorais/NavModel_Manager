@@ -1,4 +1,4 @@
-# Build script for NavModel Manager 0.0.9 on Windows 11 x64
+# Build script for NavModel Manager 0.0.10 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
@@ -64,7 +64,7 @@ $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  NAVMODEL MANAGER 0.0.9 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  NAVMODEL MANAGER 0.0.10 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
     Write-Host "Cargo:  $cargoExe"
@@ -129,6 +129,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de logica GPU." }
     & $pyExe -m unittest tests.test_navmodel_ui
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes da interface NavModel." }
+    & $pyExe -m unittest tests.test_cad_fidelity
+    if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de fidelidade CAD." }
     & $pyExe tests/verify.py
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integracao CAD." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
@@ -191,7 +193,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.9_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.10_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

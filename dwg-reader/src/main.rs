@@ -1,4 +1,5 @@
 //! Independent read-only DWG tessellator with Plant 3D Object Enabler and ACIS B-Rep caching.
+mod acds;
 use acadrust::entities::extended_entity::ExtendedEntityData;
 use acadrust::entities::solid3d::AcisData;
 use acadrust::entities::Solid3D;
@@ -80,6 +81,8 @@ struct CoverageReport {
     proxy_fallback: usize,
     wire_fallback: usize,
     failed_solids: usize,
+    partial_solids: usize,
+    missing_faces: usize,
     total_meshes_emitted: usize,
     total_triangles_emitted: usize,
     status: String, // "complete" | "partial" | "empty"
@@ -101,12 +104,145 @@ struct Output {
 struct LocalMesh {
     local_points: Vec<Vector3>,
     faces: Vec<usize>,
+    missing_faces: usize,
+    color: Option<Color>,
+}
+
+// ACIS can assign colours to individual faces independently of the owning
+// 3DSOLID. Keep that appearance in the shared local cache, resolving ByLayer
+// only when the part is inserted into its actual drawing context.
+fn acis_colors(sat: &acadrust::entities::acis::SatDocument) -> HashMap<usize, Color> {
+    use acadrust::entities::acis::{SatAttribute, SatToken};
+    let mut result = HashMap::new();
+    for true_color in [false, true] {
+        for record in &sat.records {
+            if record.entity_type
+                != if true_color {
+                    "truecolor-adesk-attrib"
+                } else {
+                    "color-adesk-attrib"
+                }
+            {
+                continue;
+            }
+            let Some(attr) = SatAttribute::from_record(record) else {
+                continue;
+            };
+            if attr.owner().0 < 0 {
+                continue;
+            }
+            let value = attr.payload().iter().find_map(|token| match token {
+                SatToken::Integer(n) => Some(*n as u32),
+                SatToken::Sab { tag: 4, data } if data.len() == 4 => {
+                    Some(u32::from_le_bytes(data.as_slice().try_into().unwrap()))
+                }
+                _ => None,
+            });
+            let Some(value) = value else {
+                continue;
+            };
+            let color = if true_color {
+                match value >> 24 {
+                    0xC0 => Color::ByLayer,
+                    0xC1 => Color::ByBlock,
+                    0xC2 => Color::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8),
+                    0xC3 => Color::from_index((value & 0xFFFF) as i16),
+                    _ => continue,
+                }
+            } else {
+                Color::from_index(value as i16)
+            };
+            if color != Color::None {
+                result.insert(attr.owner().0 as usize, color);
+            }
+        }
+    }
+    result
+}
+
+fn tessellate_local(
+    body: &opencadkernel::brep::Body,
+    sat: &acadrust::entities::acis::SatDocument,
+    tol: mesh::TessellationTolerance,
+) -> Vec<LocalMesh> {
+    let colors = acis_colors(sat);
+    let body_color = body
+        .provenance
+        .source()
+        .and_then(|s| colors.get(&(s.index() as usize)).copied());
+    let mut face_colors = body.faces.iter().map(|(_, f)| {
+        f.provenance
+            .source()
+            .and_then(|s| colors.get(&(s.index() as usize)).copied())
+            .or(body_color)
+    });
+    let first_color = face_colors.next().unwrap_or(body_color);
+    let uniform = face_colors.all(|c| c == first_color);
+    if uniform {
+        let tess = mesh::tessellate_fast(body, tol);
+        if tess.mesh.triangles.is_empty() {
+            return Vec::new();
+        }
+        return vec![LocalMesh {
+            local_points: tess
+                .mesh
+                .positions
+                .iter()
+                .map(|p| Vector3::new(p[0], p[1], p[2]))
+                .collect(),
+            faces: tess
+                .mesh
+                .triangles
+                .iter()
+                .flat_map(|t| [3, t[0], t[1], t[2]])
+                .collect(),
+            missing_faces: tess.missing_faces.len(),
+            color: first_color,
+        }];
+    }
+    let tess = mesh::tessellate(body, tol);
+    let mut groups: Vec<LocalMesh> = Vec::new();
+    for (triangle, face_key) in tess.mesh.triangles.iter().zip(&tess.triangle_faces) {
+        let color = body
+            .faces
+            .get(*face_key)
+            .and_then(|f| f.provenance.source())
+            .and_then(|s| colors.get(&(s.index() as usize)).copied())
+            .or(body_color);
+        let index = groups
+            .iter()
+            .position(|g| g.color == color)
+            .unwrap_or_else(|| {
+                groups.push(LocalMesh {
+                    local_points: Vec::new(),
+                    faces: Vec::new(),
+                    missing_faces: 0,
+                    color,
+                });
+                groups.len() - 1
+            });
+        let group = &mut groups[index];
+        let offset = group.local_points.len();
+        for &i in triangle {
+            let p = tess.mesh.positions[i];
+            group.local_points.push(Vector3::new(p[0], p[1], p[2]));
+        }
+        group.faces.extend([3, offset, offset + 1, offset + 2]);
+    }
+    if let Some(first) = groups.first_mut() {
+        first.missing_faces = tess.missing_faces.len();
+    }
+    groups
 }
 
 fn rgb(doc: &CadDocument, color: Color, layer: &str, parent: [u8; 3]) -> [u8; 3] {
     let resolved = match color {
         Color::ByBlock => return parent,
-        Color::ByLayer => doc.layers.get(layer).map(|l| l.color).unwrap_or(Color::Index(7)),
+        Color::ByLayer => doc
+            .layers
+            .get(layer)
+            .map(|l| l.color)
+            .unwrap_or(Color::Index(7)),
         other => other,
     };
     if let Some((r, g, b)) = resolved.rgb() {
@@ -133,6 +269,65 @@ fn compute_bounds(points: &[[f64; 3]]) -> Option<[f64; 6]> {
     Some([min[0], min[1], min[2], max[0], max[1], max[2]])
 }
 
+fn append_proxy_polygon(points: &mut Vec<[f64; 3]>, rings: &[Vec<usize>], faces: &mut Vec<usize>) {
+    if rings.is_empty() || rings[0].len() < 3 {
+        return;
+    }
+    let outer = &rings[0];
+    if rings.len() == 1 && outer.len() == 3 {
+        faces.extend([3, outer[0], outer[1], outer[2]]);
+        return;
+    }
+    if rings.len() == 1 && outer.len() == 4 {
+        faces.extend([
+            3, outer[0], outer[1], outer[2], 3, outer[0], outer[2], outer[3],
+        ]);
+        return;
+    }
+    let origin = Vector3::new(
+        points[outer[0]][0],
+        points[outer[0]][1],
+        points[outer[0]][2],
+    );
+    let mut normal = Vector3::new(0.0, 0.0, 0.0);
+    for i in 0..outer.len() {
+        let a = points[outer[i]];
+        let b = points[outer[(i + 1) % outer.len()]];
+        normal = normal
+            + Vector3::new(
+                (a[1] - b[1]) * (a[2] + b[2]),
+                (a[2] - b[2]) * (a[0] + b[0]),
+                (a[0] - b[0]) * (a[1] + b[1]),
+            );
+    }
+    if normal.length_squared() < 1e-20 {
+        return;
+    }
+    let (u, v) = orthonormal_basis(normal.normalize());
+    let projected: Vec<Vec<[f64; 2]>> = rings
+        .iter()
+        .map(|ring| {
+            ring.iter()
+                .map(|&i| {
+                    let p = points[i];
+                    let d = Vector3::new(p[0], p[1], p[2]) - origin;
+                    [d.dot(&u), d.dot(&v)]
+                })
+                .collect()
+        })
+        .collect();
+    let (vertices, triangles) =
+        opencadkernel::geom2d::triangulate::polygon(&projected[0], &projected[1..]);
+    let base = points.len();
+    for q in vertices {
+        let p = origin + u * q[0] + v * q[1];
+        points.push([p.x, p.y, p.z]);
+    }
+    for t in triangles {
+        faces.extend([3, base + t[0], base + t[1], base + t[2]]);
+    }
+}
+
 /// Decode Autodesk Proxy Graphics SHELL (opcode 9) into raw local points and faces.
 fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)> {
     if payload.len() < 12 {
@@ -140,19 +335,25 @@ fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)
     }
     let mut cur = 0;
     let read_u32 = |cur: &mut usize| -> Option<u32> {
-        if *cur + 4 > payload.len() { return None; }
+        if *cur + 4 > payload.len() {
+            return None;
+        }
         let val = u32::from_le_bytes(payload[*cur..*cur + 4].try_into().ok()?);
         *cur += 4;
         Some(val)
     };
     let read_i32 = |cur: &mut usize| -> Option<i32> {
-        if *cur + 4 > payload.len() { return None; }
+        if *cur + 4 > payload.len() {
+            return None;
+        }
         let val = i32::from_le_bytes(payload[*cur..*cur + 4].try_into().ok()?);
         *cur += 4;
         Some(val)
     };
     let read_f64 = |cur: &mut usize| -> Option<f64> {
-        if *cur + 8 > payload.len() { return None; }
+        if *cur + 8 > payload.len() {
+            return None;
+        }
         let val = f64::from_le_bytes(payload[*cur..*cur + 8].try_into().ok()?);
         *cur += 8;
         Some(val)
@@ -180,39 +381,33 @@ fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)
     }
 
     let mut faces = Vec::new();
+    let mut rings: Vec<Vec<usize>> = Vec::new();
     let mut read_entries = 0;
-    while read_entries < face_entry_count && cur + 4 <= payload.len() {
-        let edge_count_raw = match read_i32(&mut cur) {
-            Some(v) => v,
-            None => break,
-        };
-        let edge_count = edge_count_raw.abs() as usize;
-        read_entries += 1 + edge_count;
-        if edge_count < 3 || edge_count > 64 {
-            if cur + edge_count * 4 <= payload.len() {
-                cur += edge_count * 4;
-            } else {
-                break;
-            }
-            continue;
+    while read_entries < face_entry_count {
+        let edge_count_raw = read_i32(&mut cur)?;
+        let edge_count = edge_count_raw.unsigned_abs() as usize;
+        if edge_count > 1_000_000 || read_entries + 1 + edge_count > face_entry_count {
+            return None;
         }
-        let mut idxs = Vec::with_capacity(edge_count);
+        if edge_count_raw > 0 && !rings.is_empty() {
+            append_proxy_polygon(&mut points, &rings, &mut faces);
+            rings.clear();
+        }
+        let mut indices = Vec::with_capacity(edge_count);
         for _ in 0..edge_count {
-            if let Some(idx) = read_u32(&mut cur) {
-                if (idx as usize) < points.len() {
-                    idxs.push(idx as usize);
-                }
+            let index = read_u32(&mut cur)? as usize;
+            if index >= total_vertices {
+                return None;
             }
+            indices.push(index);
         }
-        if idxs.len() == 3 {
-            faces.extend([3, idxs[0], idxs[1], idxs[2]]);
-        } else if idxs.len() == 4 {
-            faces.extend([3, idxs[0], idxs[1], idxs[2], 3, idxs[0], idxs[2], idxs[3]]);
-        } else if idxs.len() > 4 {
-            for k in 1..idxs.len() - 1 {
-                faces.extend([3, idxs[0], idxs[k], idxs[k + 1]]);
-            }
+        if indices.len() >= 3 {
+            rings.push(indices);
         }
+        read_entries += 1 + edge_count;
+    }
+    if !rings.is_empty() {
+        append_proxy_polygon(&mut points, &rings, &mut faces);
     }
 
     if !faces.is_empty() && !points.is_empty() {
@@ -223,26 +418,42 @@ fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)
 }
 
 /// Decode Autodesk Proxy Graphics MESH (opcode 8) - MxN grid surfaces.
-fn decode_proxy_mesh(payload: &[u8], matrix: Matrix4, color: [u8; 3], name: &str, out: &mut Output) -> bool {
+fn decode_proxy_mesh(
+    payload: &[u8],
+    matrix: Matrix4,
+    color: [u8; 3],
+    name: &str,
+    out: &mut Output,
+) -> bool {
     if payload.len() < 8 {
         return false;
     }
     let mut cur = 0;
     let read_u32 = |cur: &mut usize| -> Option<u32> {
-        if *cur + 4 > payload.len() { return None; }
+        if *cur + 4 > payload.len() {
+            return None;
+        }
         let val = u32::from_le_bytes(payload[*cur..*cur + 4].try_into().ok()?);
         *cur += 4;
         Some(val)
     };
     let read_f64 = |cur: &mut usize| -> Option<f64> {
-        if *cur + 8 > payload.len() { return None; }
+        if *cur + 8 > payload.len() {
+            return None;
+        }
         let val = f64::from_le_bytes(payload[*cur..*cur + 8].try_into().ok()?);
         *cur += 8;
         Some(val)
     };
 
-    let num_rows = match read_u32(&mut cur) { Some(v) => v as usize, None => return false };
-    let num_cols = match read_u32(&mut cur) { Some(v) => v as usize, None => return false };
+    let num_rows = match read_u32(&mut cur) {
+        Some(v) => v as usize,
+        None => return false,
+    };
+    let num_cols = match read_u32(&mut cur) {
+        Some(v) => v as usize,
+        None => return false,
+    };
     if num_rows < 2 || num_cols < 2 || num_rows * num_cols > 1_000_000 {
         return false;
     }
@@ -252,9 +463,18 @@ fn decode_proxy_mesh(payload: &[u8], matrix: Matrix4, color: [u8; 3], name: &str
     }
     let mut points = Vec::with_capacity(total_pts);
     for _ in 0..total_pts {
-        let x = match read_f64(&mut cur) { Some(v) => v, None => return false };
-        let y = match read_f64(&mut cur) { Some(v) => v, None => return false };
-        let z = match read_f64(&mut cur) { Some(v) => v, None => return false };
+        let x = match read_f64(&mut cur) {
+            Some(v) => v,
+            None => return false,
+        };
+        let y = match read_f64(&mut cur) {
+            Some(v) => v,
+            None => return false,
+        };
+        let z = match read_f64(&mut cur) {
+            Some(v) => v,
+            None => return false,
+        };
         let p = matrix.transform_point(Vector3::new(x, y, z));
         points.push([p.x, p.y, p.z]);
     }
@@ -453,7 +673,8 @@ fn emit_swept_elbow(
         let cos_a = prev_n.dot(&n).clamp(-1.0, 1.0);
         let u = if sin_a > 1e-7 {
             let k = rot_axis * (1.0 / sin_a);
-            (prev_u * cos_a + k.cross(&prev_u) * sin_a + k * (k.dot(&prev_u) * (1.0 - cos_a))).normalize()
+            (prev_u * cos_a + k.cross(&prev_u) * sin_a + k * (k.dot(&prev_u) * (1.0 - cos_a)))
+                .normalize()
         } else {
             prev_u
         };
@@ -505,12 +726,12 @@ fn reconstruct_fitting_from_primitives(
             for g in &mut groups {
                 let ref_c = g[0];
                 let dot = ref_c.normal.dot(&c.normal).abs();
-                if dot > 0.975 {
+                if dot > 0.99999 {
                     let delta = c.center - ref_c.center;
                     let along = ref_c.normal * delta.dot(&ref_c.normal);
                     let perp_dist = (delta - along).length();
                     let max_r = ref_c.radius.max(c.radius);
-                    if perp_dist <= max_r * 0.45 + 2.0 {
+                    if perp_dist <= (max_r * 1e-5).max(1e-3) {
                         g.push(*c);
                         placed = true;
                         break;
@@ -536,7 +757,9 @@ fn reconstruct_fitting_from_primitives(
             let mut dedup: Vec<ProxyCircle3D> = Vec::with_capacity(g.len());
             for c in g.iter() {
                 if let Some(prev) = dedup.last() {
-                    if (c.center - prev.center).length() < 0.25 && (c.radius - prev.radius).abs() < 0.25 {
+                    if (c.center - prev.center).length() < 0.25
+                        && (c.radius - prev.radius).abs() < 0.25
+                    {
                         continue;
                     }
                 }
@@ -583,12 +806,29 @@ fn reconstruct_fitting_from_primitives(
                     let dome_h = (apex - base_c.center).dot(&dome_dir).abs();
                     let dome_steps = 6usize;
                     let (u, v) = orthonormal_basis(dome_dir);
-                    let mut prev_ring = append_circle_ring(&mut pts, base_c.center, u, v, base_c.radius, segs, matrix);
+                    let mut prev_ring = append_circle_ring(
+                        &mut pts,
+                        base_c.center,
+                        u,
+                        v,
+                        base_c.radius,
+                        segs,
+                        matrix,
+                    );
                     for s_i in 1..=dome_steps {
-                        let theta = (s_i as f64) * std::f64::consts::FRAC_PI_2 / (dome_steps as f64);
+                        let theta =
+                            (s_i as f64) * std::f64::consts::FRAC_PI_2 / (dome_steps as f64);
                         let r = (base_c.radius * theta.cos()).max(0.5);
                         let h = dome_h * theta.sin();
-                        let ring = append_circle_ring(&mut pts, base_c.center + dome_dir * h, u, v, r, segs, matrix);
+                        let ring = append_circle_ring(
+                            &mut pts,
+                            base_c.center + dome_dir * h,
+                            u,
+                            v,
+                            r,
+                            segs,
+                            matrix,
+                        );
                         bridge_rings(&mut faces, prev_ring, ring, segs);
                         prev_ring = ring;
                     }
@@ -600,19 +840,32 @@ fn reconstruct_fitting_from_primitives(
                     if poly.len() == 2 {
                         let seg = poly[1] - poly[0];
                         let len = seg.dot(&axis);
-                        if len.abs() > 1.0 {
+                        let relative = poly[0] - c0.center;
+                        let axial = relative.dot(&axis).abs();
+                        let radial = (relative - axis * relative.dot(&axis)).length();
+                        let matching_ruling = axial < 0.1
+                            && (radial - c0.radius).abs() < (c0.radius * 0.005).max(0.1)
+                            && seg.normalize().dot(&axis).abs() > 0.9999;
+                        if len.abs() > 1.0 && matching_ruling {
                             let c1 = ProxyCircle3D {
                                 center: c0.center + axis * len,
                                 radius: c0.radius,
                                 normal: c0.normal,
                             };
-                            emit_frustum_between_circles(c0, c1, segs, matrix, &mut pts, &mut faces);
+                            emit_frustum_between_circles(
+                                c0, c1, segs, matrix, &mut pts, &mut faces,
+                            );
                             break;
                         }
                     }
                 }
             }
-        } else if groups.len() >= 2 {
+        } else if groups.len() >= 2
+            && groups.len() <= 3
+            && group_axes
+                .iter()
+                .any(|axis| axis.dot(&group_axes[0]).abs() < 0.9999)
+        {
             // Distinguish between an Elbow (2 main end groups + optional 1-circle mid-bend group)
             // and a Tee/Cross (a main coaxial run group spanning across the junction + perpendicular branch groups)
             // Find the two groups with the most circles (or largest span)
@@ -660,7 +913,9 @@ fn reconstruct_fitting_from_primitives(
                         radius: b_inner.radius,
                         normal: b_inner.normal,
                     };
-                    emit_frustum_between_circles(b_inner, junc_c, segs, matrix, &mut pts, &mut faces);
+                    emit_frustum_between_circles(
+                        b_inner, junc_c, segs, matrix, &mut pts, &mut faces,
+                    );
                 }
             } else {
                 // Elbow (90°, 45°, or custom angle): pick the 2 main end groups
@@ -683,7 +938,16 @@ fn reconstruct_fitting_from_primitives(
                         }
                     }
                 }
-                emit_swept_elbow(best_pair.0, best_pair.1, mid_circle, segs, 10, matrix, &mut pts, &mut faces);
+                emit_swept_elbow(
+                    best_pair.0,
+                    best_pair.1,
+                    mid_circle,
+                    segs,
+                    10,
+                    matrix,
+                    &mut pts,
+                    &mut faces,
+                );
             }
         }
     }
@@ -702,7 +966,13 @@ fn reconstruct_fitting_from_primitives(
 }
 
 /// Parse Autodesk Proxy Graphics binary stream for 3D Shells, Meshes, Plant 3D Piping Fittings, and Structural Steel Members.
-fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &str, out: &mut Output) -> bool {
+fn process_proxy_graphics(
+    data: &[u8],
+    matrix: Matrix4,
+    color: [u8; 3],
+    name: &str,
+    out: &mut Output,
+) -> bool {
     if data.len() < 8 {
         return false;
     }
@@ -718,6 +988,12 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
         return false;
     }
 
+    let mut opcodes = BTreeMap::new();
+    let mut current_color = color;
+    let mut scope_mesh_start = out.meshes.len();
+    let mut scope_starts = Vec::new();
+    let mut primitive_stack = Vec::new();
+    let mut explicit_geometry = false;
     let mut offset = 8;
     let initial_count = out.meshes.len();
     let mut matrix_stack: Vec<Matrix4> = Vec::new();
@@ -746,7 +1022,50 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
         }
         let payload = &data[offset + 8..offset + record_size];
 
+        *opcodes.entry(record_type).or_insert(0usize) += 1;
         match record_type {
+            14 | 22 if payload.len() >= 4 => {
+                let raw = u32::from_le_bytes(payload[..4].try_into().unwrap());
+                current_color = if record_type == 14 {
+                    Color::from_index(raw as i16)
+                        .rgb()
+                        .map(|(r, g, b)| [r, g, b])
+                        .unwrap_or(color)
+                } else {
+                    match raw >> 24 {
+                        0xC2 => [
+                            ((raw >> 16) & 255) as u8,
+                            ((raw >> 8) & 255) as u8,
+                            (raw & 255) as u8,
+                        ],
+                        0xC3 => Color::from_index((raw & 255) as i16)
+                            .rgb()
+                            .map(|(r, g, b)| [r, g, b])
+                            .unwrap_or(color),
+                        _ => color,
+                    }
+                };
+            }
+            4 if payload.len() >= 88 => {
+                let f =
+                    |i: usize| f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap());
+                let center = Vector3::new(f(0), f(1), f(2));
+                let radius = f(3);
+                let normal = Vector3::new(f(4), f(5), f(6));
+                let start = Vector3::new(f(7), f(8), f(9));
+                let sweep = f(10);
+                if radius.is_finite()
+                    && radius > 0.0
+                    && normal.length_squared() > 1e-12
+                    && start.length_squared() > 1e-12
+                    && sweep.is_finite()
+                {
+                    let u = start.normalize();
+                    let v = normal.normalize().cross(&u);
+                    let at = |t: f64| center + (u * t.cos() + v * t.sin()) * radius;
+                    scope_arcs.push([at(0.0), at(sweep * 0.5), at(sweep)]);
+                }
+            }
             29 => {
                 // PushModelTransform (16 f64s = 128 bytes row-major 4x4 matrix)
                 if payload.len() >= 128 {
@@ -757,19 +1076,29 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                             m[r][c] = f64::from_le_bytes(payload[idx..idx + 8].try_into().unwrap());
                         }
                     }
+                    primitive_stack.push((
+                        std::mem::take(&mut scope_circles),
+                        std::mem::take(&mut scope_arcs),
+                        std::mem::take(&mut scope_polylines),
+                        last_poly_segment.take(),
+                        explicit_geometry,
+                    ));
+                    explicit_geometry = false;
+                    scope_starts.push(scope_mesh_start);
+                    scope_mesh_start = out.meshes.len();
                     matrix_stack.push(cur_matrix);
                     cur_matrix = cur_matrix * Matrix4 { m };
                 }
             }
             31 => {
                 // PopModelTransform: flush any fitting primitives accumulated in this local transform scope
-                if !scope_circles.is_empty() {
+                if !scope_circles.is_empty() && !explicit_geometry {
                     reconstruct_fitting_from_primitives(
                         &scope_circles,
                         &scope_arcs,
                         &scope_polylines,
                         cur_matrix,
-                        color,
+                        current_color,
                         name,
                         out,
                     );
@@ -777,6 +1106,19 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                     scope_arcs.clear();
                     scope_polylines.clear();
                 }
+                scope_circles.clear();
+                scope_arcs.clear();
+                scope_polylines.clear();
+                if let Some((circles, arcs, polylines, segment, has_explicit)) =
+                    primitive_stack.pop()
+                {
+                    scope_circles = circles;
+                    scope_arcs = arcs;
+                    scope_polylines = polylines;
+                    last_poly_segment = segment;
+                    explicit_geometry = has_explicit;
+                }
+                scope_mesh_start = scope_starts.pop().unwrap_or(initial_count);
                 if let Some(prev) = matrix_stack.pop() {
                     cur_matrix = prev;
                 }
@@ -784,11 +1126,17 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
             2 => {
                 // Circle (center, radius, normal) = 7 f64s = 56 bytes
                 if payload.len() >= 56 {
-                    let f = |i: usize| f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap());
+                    let f = |i: usize| {
+                        f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap())
+                    };
                     let center = Vector3::new(f(0), f(1), f(2));
                     let radius = f(3);
                     let normal = Vector3::new(f(4), f(5), f(6));
-                    if radius.is_finite() && radius >= 0.25 && radius <= 50_000.0 && normal.length_squared() > 1e-8 {
+                    if radius.is_finite()
+                        && radius >= 0.25
+                        && radius <= 50_000.0
+                        && normal.length_squared() > 1e-8
+                    {
                         scope_circles.push(ProxyCircle3D {
                             center,
                             radius,
@@ -800,7 +1148,9 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
             3 => {
                 // Circle3Pt = 9 f64s = 72 bytes
                 if payload.len() >= 72 {
-                    let f = |i: usize| f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap());
+                    let f = |i: usize| {
+                        f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap())
+                    };
                     let p1 = Vector3::new(f(0), f(1), f(2));
                     let p2 = Vector3::new(f(3), f(4), f(5));
                     let p3 = Vector3::new(f(6), f(7), f(8));
@@ -812,14 +1162,16 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
             5 => {
                 // CircularArc3Pt = 9 f64s + u32 = 76 bytes
                 if payload.len() >= 72 {
-                    let f = |i: usize| f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap());
+                    let f = |i: usize| {
+                        f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap())
+                    };
                     let p1 = Vector3::new(f(0), f(1), f(2));
                     let p2 = Vector3::new(f(3), f(4), f(5));
                     let p3 = Vector3::new(f(6), f(7), f(8));
                     scope_arcs.push([p1, p2, p3]);
                 }
             }
-            6 => {
+            6 | 32 => {
                 // Polyline = u32 count + count * 24 bytes
                 if payload.len() >= 4 {
                     let cnt = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
@@ -828,8 +1180,12 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                         for i in 0..cnt {
                             let base = 4 + i * 24;
                             let x = f64::from_le_bytes(payload[base..base + 8].try_into().unwrap());
-                            let y = f64::from_le_bytes(payload[base + 8..base + 16].try_into().unwrap());
-                            let z = f64::from_le_bytes(payload[base + 16..base + 24].try_into().unwrap());
+                            let y = f64::from_le_bytes(
+                                payload[base + 8..base + 16].try_into().unwrap(),
+                            );
+                            let z = f64::from_le_bytes(
+                                payload[base + 16..base + 24].try_into().unwrap(),
+                            );
                             pts.push(Vector3::new(x, y, z));
                         }
                         if (pts[cnt - 1] - pts[0]).length() > 1e-3 || cnt >= 12 {
@@ -841,6 +1197,40 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                             }
                             scope_polylines.push(pts);
                         }
+                    }
+                }
+            }
+            7 if payload.len() >= 4 => {
+                let count = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+                if count >= 3 && count <= 1_000_000 && 4 + count * 24 <= payload.len() {
+                    let mut points = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let at = 4 + i * 24;
+                        let f = |j: usize| {
+                            f64::from_le_bytes(
+                                payload[at + j * 8..at + (j + 1) * 8].try_into().unwrap(),
+                            )
+                        };
+                        points.push([f(0), f(1), f(2)]);
+                    }
+                    let mut faces = Vec::new();
+                    append_proxy_polygon(&mut points, &[(0..count).collect()], &mut faces);
+                    if !faces.is_empty() {
+                        let points = points
+                            .iter()
+                            .map(|p| {
+                                let q = cur_matrix.transform_point(Vector3::new(p[0], p[1], p[2]));
+                                [q.x, q.y, q.z]
+                            })
+                            .collect();
+                        explicit_geometry = true;
+                        out.meshes.push(Mesh {
+                            name: format!("{} [Plant3D-Polygon]", name),
+                            color: current_color,
+                            points,
+                            faces,
+                            ..Default::default()
+                        });
                     }
                 }
             }
@@ -871,9 +1261,14 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                                 let dir = axis_vec * (1.0 / axis_len);
                                 let mid = (p_start + p_end) * 0.5;
                                 for k in 0..half {
-                                    let v = Vector3::new(local_pts[k][0], local_pts[k][1], local_pts[k][2]);
+                                    let v = Vector3::new(
+                                        local_pts[k][0],
+                                        local_pts[k][1],
+                                        local_pts[k][2],
+                                    );
                                     let offset_from_mid = v - mid;
-                                    let in_plane = offset_from_mid - dir * offset_from_mid.dot(&dir);
+                                    let in_plane =
+                                        offset_from_mid - dir * offset_from_mid.dot(&dir);
                                     let v0 = p_start + in_plane;
                                     let v1 = p_end + in_plane;
                                     local_pts[k] = [v0.x, v0.y, v0.z];
@@ -889,9 +1284,10 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                             [tp.x, tp.y, tp.z]
                         })
                         .collect();
+                    explicit_geometry = true;
                     out.meshes.push(Mesh {
                         name: format!("{} [Plant3D]", name),
-                        color,
+                        color: current_color,
                         points,
                         faces,
                         ..Default::default()
@@ -900,7 +1296,9 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
             }
             8 => {
                 // Opcode 8 = MESH
-                decode_proxy_mesh(payload, cur_matrix, color, name, out);
+                if decode_proxy_mesh(payload, cur_matrix, current_color, name, out) {
+                    explicit_geometry = true;
+                }
             }
             _ => {}
         }
@@ -908,13 +1306,13 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
     }
 
     // Flush any remaining fitting primitives outside a PopModelTransform
-    if out.meshes.len() == initial_count && !scope_circles.is_empty() {
+    if !explicit_geometry && !scope_circles.is_empty() {
         reconstruct_fitting_from_primitives(
             &scope_circles,
             &scope_arcs,
             &scope_polylines,
             cur_matrix,
-            color,
+            current_color,
             name,
             out,
         );
@@ -940,13 +1338,20 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
                     radius: tube_r,
                     normal: axis.normalize(),
                 };
-                emit_frustum_between_circles(c0, c1, segs, Matrix4::identity(), &mut pts, &mut faces);
+                emit_frustum_between_circles(
+                    c0,
+                    c1,
+                    segs,
+                    Matrix4::identity(),
+                    &mut pts,
+                    &mut faces,
+                );
             }
         }
         if !faces.is_empty() {
             out.meshes.push(Mesh {
                 name: format!("{} [Plant3D-Structure]", name),
-                color,
+                color: current_color,
                 points: pts,
                 faces,
                 ..Default::default()
@@ -954,11 +1359,19 @@ fn process_proxy_graphics(data: &[u8], matrix: Matrix4, color: [u8; 3], name: &s
         }
     }
 
+    if std::env::var_os("PLANTVIEW_DWG_AUDIT").is_some() {
+        eprintln!(
+            "[DWG proxy ops] {} {:?} meshes={}",
+            name,
+            opcodes,
+            out.meshes.len() - initial_count
+        );
+    }
     out.meshes.len() > initial_count
 }
 
 fn push_diagnostic(out: &mut Output, diag: EntityDiagnostic) {
-    if !diag.status.starts_with("SUCCESS") || out.diagnostics.len() < 50 {
+    if diag.missing_faces > 0 || !diag.status.starts_with("SUCCESS") || out.diagnostics.len() < 50 {
         out.diagnostics.push(diag);
     }
 }
@@ -966,6 +1379,7 @@ fn push_diagnostic(out: &mut Output, diag: EntityDiagnostic) {
 /// Process conventional solid entities (Solid3D, Body, Region, Surface)
 /// following strict priority: Native ACIS -> Proxy GraphicData Fallback -> Wire Fallback.
 fn process_solid_entity(
+    doc: &CadDocument,
     common_handle: u64,
     common_layer: &str,
     entity_kind: &str,
@@ -1023,10 +1437,14 @@ fn process_solid_entity(
                     .collect::<Vec<_>>();
                 total_v += points.len();
                 total_t += local.faces.len() / 4;
+                diag.missing_faces += local.missing_faces;
                 all_points.extend(points.clone());
                 out.meshes.push(Mesh {
                     name: format!("{} #{}", name, index + 1),
-                    color,
+                    color: local
+                        .color
+                        .map(|c| rgb(doc, c, common_layer, color))
+                        .unwrap_or(color),
                     points,
                     faces: local.faces.clone(),
                     ..Default::default()
@@ -1034,6 +1452,12 @@ fn process_solid_entity(
             }
             diag.parse_result = "Cached".to_string();
             diag.status = "SUCCESS_ACIS_CACHE".to_string();
+            if diag.missing_faces > 0 {
+                out.warnings.push(format!(
+                    "Sólido {:X}: {} face(s) ACIS não reconstruída(s)",
+                    common_handle, diag.missing_faces
+                ));
+            }
             diag.vertices = total_v;
             diag.triangles = total_t;
             diag.bounds = compute_bounds(&all_points);
@@ -1064,31 +1488,12 @@ fn process_solid_entity(
             };
 
             for body in bodies.iter() {
-                let tess = mesh::tessellate_fast(body, tol);
-                total_missing += tess.missing_faces.len();
-                let local_points = tess
-                    .mesh
-                    .positions
-                    .iter()
-                    .map(|p| Vector3::new(p[0], p[1], p[2]))
-                    .collect::<Vec<_>>();
-                let faces = tess
-                    .mesh
-                    .triangles
-                    .iter()
-                    .flat_map(|t| [3, t[0] as usize, t[1] as usize, t[2] as usize])
-                    .collect::<Vec<_>>();
-
-                if !faces.is_empty() {
-                    total_v += local_points.len();
-                    total_t += faces.len() / 4;
-                    for lp in &local_points {
-                        all_local_pts.push([lp.x, lp.y, lp.z]);
-                    }
-                    local_meshes.push(LocalMesh {
-                        local_points,
-                        faces,
-                    });
+                for local in tessellate_local(body, &sat, tol) {
+                    total_missing += local.missing_faces;
+                    total_v += local.local_points.len();
+                    total_t += local.faces.len() / 4;
+                    all_local_pts.extend(local.local_points.iter().map(|p| [p.x, p.y, p.z]));
+                    local_meshes.push(local);
                 }
             }
 
@@ -1151,7 +1556,10 @@ fn process_solid_entity(
                     all_points.extend(points.clone());
                     out.meshes.push(Mesh {
                         name: format!("{} #{}", name, index + 1),
-                        color,
+                        color: local
+                            .color
+                            .map(|c| rgb(doc, c, common_layer, color))
+                            .unwrap_or(color),
                         points,
                         faces: local.faces.clone(),
                         ..Default::default()
@@ -1256,6 +1664,158 @@ fn process_solid_entity(
     push_diagnostic(out, diag);
 }
 
+fn proxy_bounds_and_root(data: &[u8]) -> Option<([f64; 6], Matrix4)> {
+    if data.len() < 8 {
+        return None;
+    }
+    let total = u32::from_le_bytes(data[..4].try_into().ok()?) as usize;
+    let count = u32::from_le_bytes(data[4..8].try_into().ok()?) as usize;
+    if total > data.len() || count > 500_000 {
+        return None;
+    }
+    let mut offset = 8;
+    let mut current = Matrix4::identity();
+    let mut stack = Vec::new();
+    let mut root = None;
+    let mut points = Vec::new();
+    for _ in 0..count {
+        if offset + 8 > total {
+            break;
+        }
+        let size = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+        let kind = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().ok()?);
+        if size < 8 || offset + size > total {
+            return None;
+        }
+        let payload = &data[offset + 8..offset + size];
+        let f = |i: usize| f64::from_le_bytes(payload[i * 8..(i + 1) * 8].try_into().unwrap());
+        let mut local = Vec::new();
+        match kind {
+            29 if payload.len() >= 128 => {
+                let mut m = [[0.; 4]; 4];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        m[r][c] = f(r * 4 + c);
+                    }
+                }
+                let next = Matrix4 { m };
+                if stack.is_empty() && root.is_none() {
+                    root = Some(next);
+                }
+                stack.push(current);
+                current = current * next;
+            }
+            31 => {
+                if let Some(previous) = stack.pop() {
+                    current = previous;
+                }
+            }
+            6 | 7 | 32 if payload.len() >= 4 => {
+                let n = u32::from_le_bytes(payload[..4].try_into().ok()?) as usize;
+                if n <= 1_000_000 && 4 + n * 24 <= payload.len() {
+                    for i in 0..n {
+                        let k = 4 + i * 24;
+                        local.push(Vector3::new(
+                            f64::from_le_bytes(payload[k..k + 8].try_into().unwrap()),
+                            f64::from_le_bytes(payload[k + 8..k + 16].try_into().unwrap()),
+                            f64::from_le_bytes(payload[k + 16..k + 24].try_into().unwrap()),
+                        ));
+                    }
+                }
+            }
+            3 if payload.len() >= 72 => {
+                if let Some(c) = circle_from_3_pts(
+                    Vector3::new(f(0), f(1), f(2)),
+                    Vector3::new(f(3), f(4), f(5)),
+                    Vector3::new(f(6), f(7), f(8)),
+                ) {
+                    let (u, v) = orthonormal_basis(c.normal);
+                    for i in 0..32 {
+                        let angle = i as f64 * std::f64::consts::TAU / 32.;
+                        local.push(c.center + (u * angle.cos() + v * angle.sin()) * c.radius);
+                    }
+                }
+            }
+            2 if payload.len() >= 56 => {
+                let c = Vector3::new(f(0), f(1), f(2));
+                let n = Vector3::new(f(4), f(5), f(6));
+                if n.length_squared() > 1e-12 {
+                    let (u, v) = orthonormal_basis(n);
+                    for i in 0..32 {
+                        let angle = i as f64 * std::f64::consts::TAU / 32.;
+                        local.push(c + (u * angle.cos() + v * angle.sin()) * f(3));
+                    }
+                }
+            }
+            5 if payload.len() >= 72 => {
+                for i in 0..3 {
+                    local.push(Vector3::new(f(i * 3), f(i * 3 + 1), f(i * 3 + 2)));
+                }
+            }
+            _ => {}
+        }
+        for p in local {
+            let q = current.transform_point(p);
+            if q.x.is_finite() && q.y.is_finite() && q.z.is_finite() {
+                points.push([q.x, q.y, q.z]);
+            }
+        }
+        offset += size;
+    }
+    Some((
+        compute_bounds(&points)?,
+        root.unwrap_or(Matrix4::identity()),
+    ))
+}
+
+fn plant_block_reference(
+    doc: &CadDocument,
+    value: &acadrust::entities::UnknownEntity,
+) -> Option<(String, Matrix4, [f64; 6])> {
+    use acadrust::io::dwg::{
+        dwg_stream_readers::bit_reader::DwgBitReader, dwg_version::DwgVersion,
+    };
+    if !value.dxf_name.to_ascii_uppercase().starts_with("ACPP") {
+        return None;
+    }
+    let raw = value.raw_dwg_data.as_ref()?;
+    let dxf = value.dwg_source_version?;
+    if dxf < acadrust::types::DxfVersion::AC1024 || value.dwg_handle_bits <= 0 {
+        return None;
+    }
+    let start = raw.len() as i64 * 8 - value.dwg_handle_bits;
+    if start < 0 {
+        return None;
+    }
+    let mut reader = DwgBitReader::new(raw.clone(), DwgVersion::from_dxf_version(dxf).ok()?, dxf);
+    reader.set_position_in_bits(start);
+    let mut referenced = Vec::new();
+    while reader.position_in_bits() + 8 <= raw.len() as i64 * 8 {
+        let before = reader.position_in_bits();
+        let h = reader.read_handle_relative(value.common.handle.value());
+        if reader.check_error().is_err() || reader.position_in_bits() <= before {
+            break;
+        }
+        if let Some(block) = doc.block_records.iter().find(|b| b.handle.value() == h) {
+            if block.name != "*Model_Space"
+                && !block.name.starts_with("*Paper_Space")
+                && !block.flags.is_xref
+                && !block.flags.is_xref_overlay
+                && !block.flags.is_external
+            {
+                referenced.push(block.name.clone());
+            }
+        }
+    }
+    referenced.sort();
+    referenced.dedup();
+    if referenced.len() != 1 {
+        return None;
+    }
+    let (bounds, root) = proxy_bounds_and_root(value.common.graphic_data.as_deref()?)?;
+    Some((referenced.pop()?, root, bounds))
+}
+
 fn walk(
     doc: &CadDocument,
     entity: &EntityType,
@@ -1263,20 +1823,44 @@ fn walk(
     prefix: &str,
     depth: usize,
     parent_color: [u8; 3],
+    parent_layer: &str,
     visited_blocks: &mut Vec<String>,
     acis_cache: &mut HashMap<u64, Option<Vec<LocalMesh>>>,
     out: &mut Output,
 ) {
     if depth > 32 {
-        out.warnings.push("Bloco recursivo ou profundidade superior a 32".into());
+        out.warnings
+            .push("Bloco recursivo ou profundidade superior a 32".into());
         return;
     }
     let common = entity.common();
     if common.invisible {
         return;
     }
-    let color = rgb(doc, common.color, &common.layer, parent_color);
-    let name = format!("{}{:X} | {}", prefix, common.handle.value(), common.layer);
+    let effective_layer = if depth > 0 && common.layer == "0" {
+        parent_layer
+    } else {
+        common.layer.as_str()
+    };
+    let color = rgb(doc, common.color, effective_layer, parent_color);
+    let name = format!(
+        "{}{:X} | {}",
+        prefix,
+        common.handle.value(),
+        effective_layer
+    );
+    if std::env::var_os("PLANTVIEW_DWG_AUDIT").is_some() {
+        if let Some(data) = &common.graphic_data {
+            if data.len() > 8 {
+                eprintln!(
+                    "[DWG proxy] handle={:X} bytes={} type={}",
+                    common.handle.value(),
+                    data.len(),
+                    entity.as_entity().entity_type()
+                );
+            }
+        }
+    }
 
     // 1. Block Inserts (References)
     if let EntityType::Insert(insert) = entity {
@@ -1285,11 +1869,15 @@ fn walk(
         {
             return;
         }
-        if visited_blocks.iter().any(|b| b.eq_ignore_ascii_case(&insert.block_name)) {
+        if visited_blocks
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(&insert.block_name))
+        {
             return; // Cycle detection
         }
         let Some(block) = doc.block_records.get(&insert.block_name) else {
-            out.warnings.push(format!("Bloco ausente: {}", insert.block_name));
+            out.warnings
+                .push(format!("Bloco ausente: {}", insert.block_name));
             return;
         };
         if block.flags.is_xref || block.flags.is_xref_overlay || block.flags.is_external {
@@ -1300,7 +1888,8 @@ fn walk(
             return;
         }
         if insert.row_count > 1 || insert.column_count > 1 {
-            out.warnings.push(format!("MINSERT nao suportado: {}", name));
+            out.warnings
+                .push(format!("MINSERT nao suportado: {}", name));
             return;
         }
 
@@ -1315,6 +1904,7 @@ fn walk(
                 &format!("{}{}/", prefix, insert.block_name),
                 depth + 1,
                 color,
+                effective_layer,
                 visited_blocks,
                 acis_cache,
                 out,
@@ -1328,8 +1918,9 @@ fn walk(
     match entity {
         EntityType::Solid3D(s) => {
             process_solid_entity(
+                doc,
                 common.handle.value(),
-                &common.layer,
+                effective_layer,
                 "Solid3D",
                 &s.acis_data,
                 common.graphic_data.as_deref(),
@@ -1344,8 +1935,9 @@ fn walk(
         }
         EntityType::Body(b) => {
             process_solid_entity(
+                doc,
                 common.handle.value(),
-                &common.layer,
+                effective_layer,
                 "Body",
                 &b.acis_data,
                 common.graphic_data.as_deref(),
@@ -1360,8 +1952,9 @@ fn walk(
         }
         EntityType::Region(r) => {
             process_solid_entity(
+                doc,
                 common.handle.value(),
-                &common.layer,
+                effective_layer,
                 "Region",
                 &r.acis_data,
                 common.graphic_data.as_deref(),
@@ -1376,8 +1969,9 @@ fn walk(
         }
         EntityType::Surface(s) => {
             process_solid_entity(
+                doc,
                 common.handle.value(),
-                &common.layer,
+                effective_layer,
                 "Surface",
                 &s.acis_data,
                 common.graphic_data.as_deref(),
@@ -1442,7 +2036,16 @@ fn walk(
                 if f.vertices.len() == 3 {
                     faces.extend([3, f.vertices[0], f.vertices[1], f.vertices[2]]);
                 } else if f.vertices.len() == 4 {
-                    faces.extend([3, f.vertices[0], f.vertices[1], f.vertices[2], 3, f.vertices[0], f.vertices[2], f.vertices[3]]);
+                    faces.extend([
+                        3,
+                        f.vertices[0],
+                        f.vertices[1],
+                        f.vertices[2],
+                        3,
+                        f.vertices[0],
+                        f.vertices[2],
+                        f.vertices[3],
+                    ]);
                 } else if f.vertices.len() > 4 {
                     for k in 1..f.vertices.len() - 1 {
                         faces.extend([3, f.vertices[0], f.vertices[k], f.vertices[k + 1]]);
@@ -1468,7 +2071,12 @@ fn walk(
         let p2 = matrix.transform_point(f.second_corner);
         let p3 = matrix.transform_point(f.third_corner);
         let p4 = matrix.transform_point(f.fourth_corner);
-        let points = vec![[p1.x, p1.y, p1.z], [p2.x, p2.y, p2.z], [p3.x, p3.y, p3.z], [p4.x, p4.y, p4.z]];
+        let points = vec![
+            [p1.x, p1.y, p1.z],
+            [p2.x, p2.y, p2.z],
+            [p3.x, p3.y, p3.z],
+            [p4.x, p4.y, p4.z],
+        ];
         let faces = if f.third_corner == f.fourth_corner {
             vec![3, 0, 1, 2]
         } else {
@@ -1482,6 +2090,75 @@ fn walk(
             ..Default::default()
         });
         return;
+    }
+
+    // Follow the explicit catalog block pointer and validate its saved placement
+    // against the original proxy extents before accepting exact B-rep geometry.
+    if let EntityType::Unknown(value) = entity {
+        if let Some((block_name, placement, saved_bounds)) = plant_block_reference(doc, value) {
+            if !visited_blocks
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(&block_name))
+            {
+                let mut recovered = Output::default();
+                visited_blocks.push(block_name.clone());
+                for child in doc.entities_in_block(&block_name) {
+                    walk(
+                        doc,
+                        child,
+                        matrix * placement,
+                        &format!("{}{}/", prefix, block_name),
+                        depth + 1,
+                        color,
+                        effective_layer,
+                        visited_blocks,
+                        acis_cache,
+                        &mut recovered,
+                    );
+                }
+                visited_blocks.pop();
+                let actual: Vec<_> = recovered
+                    .meshes
+                    .iter()
+                    .flat_map(|m| m.points.iter().copied())
+                    .collect();
+                let mut expected = Vec::new();
+                for x in [saved_bounds[0], saved_bounds[3]] {
+                    for y in [saved_bounds[1], saved_bounds[4]] {
+                        for z in [saved_bounds[2], saved_bounds[5]] {
+                            let p = matrix.transform_point(Vector3::new(x, y, z));
+                            expected.push([p.x, p.y, p.z]);
+                        }
+                    }
+                }
+                if let (Some(ab), Some(eb)) = (compute_bounds(&actual), compute_bounds(&expected)) {
+                    let span = (eb[3] - eb[0]).max(eb[4] - eb[1]).max(eb[5] - eb[2]);
+                    let tolerance = (span * 0.05).max(2.);
+                    let error = (0..6).map(|i| (ab[i] - eb[i]).abs()).fold(0., f64::max);
+                    if std::env::var_os("PLANTVIEW_DWG_AUDIT").is_some() {
+                        eprintln!(
+                            "[Plant exact bounds] {:X} block={} error={} tolerance={} meshes={}",
+                            value.common.handle.value(),
+                            block_name,
+                            error,
+                            tolerance,
+                            recovered.meshes.len()
+                        );
+                    }
+                    if error <= tolerance && !recovered.meshes.is_empty() {
+                        out.meshes.extend(recovered.meshes);
+                        out.diagnostics.extend(recovered.diagnostics);
+                        out.warnings.extend(recovered.warnings);
+                        out.coverage.total_solids_found += recovered.coverage.total_solids_found;
+                        out.coverage.acis_success += recovered.coverage.acis_success;
+                        out.coverage.failed_solids += recovered.coverage.failed_solids;
+                        out.coverage.proxy_fallback += recovered.coverage.proxy_fallback;
+                        out.coverage.wire_fallback += recovered.coverage.wire_fallback;
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     // 6. Extended Entities (AutoCAD Plant 3D / Advance Steel / Civil Proxy Entities)
@@ -1501,7 +2178,9 @@ fn walk(
         }
     }
 
-    *out.skipped.entry(entity.as_entity().entity_type().to_string()).or_default() += 1;
+    *out.skipped
+        .entry(entity.as_entity().entity_type().to_string())
+        .or_default() += 1;
 }
 
 fn fixture(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -1509,10 +2188,19 @@ fn fixture(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut doc = CadDocument::new();
     doc.header.insertion_units = 4;
     let mut s = Solid3D::new();
-    s.set_sat_document(&primitives::build_box([10000., 20000., 3000.], 1000., 2000., 3000.));
+    s.set_sat_document(&primitives::build_box(
+        [10000., 20000., 3000.],
+        1000.,
+        2000.,
+        3000.,
+    ));
     doc.add_entity(EntityType::Solid3D(s))?;
     let mut s = Solid3D::new();
-    s.set_sat_document(&primitives::build_cylinder([13000., 20000., 0.], 500., 2000.));
+    s.set_sat_document(&primitives::build_cylinder(
+        [13000., 20000., 0.],
+        500.,
+        2000.,
+    ));
     doc.add_entity(EntityType::Solid3D(s))?;
     DwgWriter::write_to_file(path, &doc)?;
     Ok(())
@@ -1525,7 +2213,8 @@ fn prewarm_acis_cache_parallel(
     // Collect unique ACIS entities reachable from *Model_Space
     let mut blocks_to_visit = vec!["*Model_Space".to_string()];
     let mut visited_b = std::collections::HashSet::new();
-    let mut acis_jobs: Vec<(u64, &AcisData, Option<&[acadrust::entities::solid3d::Wire]>)> = Vec::new();
+    let mut acis_jobs: Vec<(u64, &AcisData, Option<&[acadrust::entities::solid3d::Wire]>)> =
+        Vec::new();
     let mut seen_handles = std::collections::HashSet::new();
 
     while let Some(bname) = blocks_to_visit.pop() {
@@ -1568,6 +2257,11 @@ fn prewarm_acis_cache_parallel(
                         acis_jobs.push((h, &s.acis_data, None));
                     }
                 }
+                EntityType::Unknown(value) => {
+                    if let Some((name, _, _)) = plant_block_reference(doc, value) {
+                        blocks_to_visit.push(name);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1601,7 +2295,16 @@ fn prewarm_acis_cache_parallel(
                         out_chunk.push((h, None));
                         continue;
                     };
-                    let (bodies, _) = acis::lift(&sat);
+                    let (bodies, loss) = acis::lift(&sat);
+                    if !loss.is_empty() {
+                        eprintln!(
+                            "[DWG ACIS loss] {:X} surfaces={} curves={} broken={}",
+                            h,
+                            loss.surfaces.len(),
+                            loss.curves.len(),
+                            loss.broken.len()
+                        );
+                    }
                     let tol = if acis_data.size() > 40_000 {
                         mesh::TessellationTolerance::new(0.55, 0.5)
                     } else {
@@ -1610,27 +2313,18 @@ fn prewarm_acis_cache_parallel(
                     let mut local_meshes = Vec::new();
                     let mut all_local_pts: Vec<[f64; 3]> = Vec::new();
                     for body in bodies.iter() {
-                        let tess = mesh::tessellate_fast(body, tol);
-                        let local_points = tess
-                            .mesh
-                            .positions
-                            .iter()
-                            .map(|p| Vector3::new(p[0], p[1], p[2]))
-                            .collect::<Vec<_>>();
-                        let faces = tess
-                            .mesh
-                            .triangles
-                            .iter()
-                            .flat_map(|t| [3, t[0] as usize, t[1] as usize, t[2] as usize])
-                            .collect::<Vec<_>>();
-                        if !faces.is_empty() {
-                            for lp in &local_points {
-                                all_local_pts.push([lp.x, lp.y, lp.z]);
+                        for local in tessellate_local(body, &sat, tol) {
+                            if local.missing_faces > 0 {
+                                eprintln!(
+                                    "[DWG face loss] {:X} missing={} triangles={}",
+                                    h,
+                                    local.missing_faces,
+                                    local.faces.len() / 4
+                                );
                             }
-                            local_meshes.push(LocalMesh {
-                                local_points,
-                                faces,
-                            });
+                            all_local_pts
+                                .extend(local.local_points.iter().map(|p| [p.x, p.y, p.z]));
+                            local_meshes.push(local);
                         }
                     }
                     let mut bounds_mismatch = false;
@@ -1704,7 +2398,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut read_mode = "normal_failsafe".to_string();
     let mut reader = DwgReader::from_file(&args[1])?;
     reader.options.failsafe = true;
-    let doc = match reader.read() {
+    let mut doc = match reader.read() {
         Ok(doc) => {
             eprintln!("[plantview-dwg] Leitura padrão com failsafe concluída com sucesso.");
             doc
@@ -1718,6 +2412,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             outcome.document
         }
     };
+    if let Some(raw) = doc.raw_acds_data.clone() {
+        if let Some(records) = acds::active_blobs(raw.as_slice()) {
+            let mut corrected = 0;
+            for (handle, blob) in records {
+                let Some(entity) = doc.get_entity_mut(acadrust::types::Handle::new(handle)) else {
+                    continue;
+                };
+                let data = match entity {
+                    EntityType::Solid3D(s) => &mut s.acis_data,
+                    EntityType::Body(s) => &mut s.acis_data,
+                    EntityType::Region(s) => &mut s.acis_data,
+                    EntityType::Surface(s) => &mut s.acis_data,
+                    _ => continue,
+                };
+                if data.sab_data != blob {
+                    data.sab_data = blob;
+                    data.sat_data.clear();
+                    data.is_binary = true;
+                    data.version = acadrust::entities::solid3d::AcisVersion::Version2;
+                    corrected += 1;
+                }
+            }
+            eprintln!(
+                "[DWG active index] {} modeler bindings corrected using current datastore records",
+                corrected
+            );
+        }
+    }
     let total_entities_count = doc.entities().count();
     eprintln!(
         "[plantview-dwg] Documento DWG decodificado em {:.2}s. Total entidades: {}",
@@ -1744,6 +2466,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "",
             0,
             [230, 230, 230],
+            "0",
             &mut visited_blocks,
             &mut acis_cache,
             &mut out,
@@ -1753,11 +2476,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Finalize coverage calculations
     out.coverage.total_meshes_emitted = out.meshes.len();
     out.coverage.total_triangles_emitted = out.meshes.iter().map(|m| m.faces.len() / 4).sum();
+    out.coverage.partial_solids = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.missing_faces > 0)
+        .count();
+    out.coverage.missing_faces = out.diagnostics.iter().map(|d| d.missing_faces).sum();
     out.coverage.status = if out.coverage.total_solids_found == 0 && out.meshes.is_empty() {
         "empty".to_string()
-    } else if out.coverage.failed_solids == 0 {
+    } else if out.coverage.failed_solids == 0 && out.coverage.partial_solids == 0 {
         "complete".to_string()
-    } else if out.coverage.acis_success > 0 || out.coverage.proxy_fallback > 0 || out.coverage.wire_fallback > 0 {
+    } else if out.coverage.acis_success > 0
+        || out.coverage.proxy_fallback > 0
+        || out.coverage.wire_fallback > 0
+    {
         "partial".to_string()
     } else {
         "empty".to_string()
@@ -1777,10 +2509,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     for (kind, count) in &out.skipped {
-        out.warnings.push(format!("{} entidade(s) {} ignorada(s)", count, kind));
+        out.warnings
+            .push(format!("{} entidade(s) {} ignorada(s)", count, kind));
     }
 
-    if out.meshes.len() > 300 {
+    if out.meshes.len() > 300 && std::env::var_os("PLANTVIEW_DWG_NO_BATCH").is_none() {
         let original_count = out.meshes.len();
         let mut batches: Vec<Mesh> = Vec::new();
         let mut map: HashMap<(String, [u8; 3]), usize> = HashMap::new();
@@ -1853,8 +2586,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    serde_json::to_writer(BufWriter::with_capacity(4 * 1024 * 1024, File::create(&args[2])?), &out)?;
-    eprintln!("[plantview-dwg] Concluido com sucesso em {:.2}s", t0.elapsed().as_secs_f32());
+    serde_json::to_writer(
+        BufWriter::with_capacity(4 * 1024 * 1024, File::create(&args[2])?),
+        &out,
+    )?;
+    eprintln!(
+        "[plantview-dwg] Concluido com sucesso em {:.2}s",
+        t0.elapsed().as_secs_f32()
+    );
     Ok(())
 }
 
@@ -1862,5 +2601,154 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("{}", error);
         std::process::exit(1);
+    }
+}
+#[cfg(test)]
+mod fidelity_tests {
+    use super::*;
+    #[test]
+    fn face_true_color_overrides_aci_without_leaking_to_other_faces() {
+        use acadrust::entities::acis::{SatDocument, SatPointer, SatRecord, SatToken};
+        let mut sat = SatDocument::new();
+        for (index, kind, owner, value) in [
+            (0, "truecolor-adesk-attrib", 12, 0xC2123456u32),
+            (1, "color-adesk-attrib", 12, 5),
+            (2, "color-adesk-attrib", 18, 256),
+        ] {
+            let mut r = SatRecord::new(index, kind);
+            r.tokens = vec![
+                SatToken::Pointer(SatPointer::NULL),
+                SatToken::Pointer(SatPointer::NULL),
+                SatToken::Pointer(SatPointer(owner)),
+                SatToken::Sab {
+                    tag: 4,
+                    data: value.to_le_bytes().to_vec(),
+                },
+            ];
+            sat.records.push(r);
+        }
+        let colors = acis_colors(&sat);
+        assert_eq!(colors.get(&12), Some(&Color::from_rgb(0x12, 0x34, 0x56)));
+        assert_eq!(colors.get(&18), Some(&Color::ByLayer));
+        assert!(!colors.contains_key(&13));
+    }
+    #[test]
+    fn partial_solid_is_reported_after_success_sample_limit() {
+        let mut out = Output::default();
+        for _ in 0..50 {
+            push_diagnostic(
+                &mut out,
+                EntityDiagnostic {
+                    status: "SUCCESS_ACIS_CACHE".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        push_diagnostic(
+            &mut out,
+            EntityDiagnostic {
+                status: "SUCCESS_ACIS_CACHE".into(),
+                missing_faces: 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.diagnostics.len(), 51);
+        assert_eq!(out.diagnostics.last().unwrap().missing_faces, 2);
+    }
+    fn stream(records: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+        let mut bytes = vec![0u8; 8];
+        let count = records.len() as u32;
+        for (kind, payload) in records {
+            bytes.extend(((payload.len() + 8) as u32).to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(payload);
+        }
+        let length = bytes.len() as u32;
+        bytes[..4].copy_from_slice(&length.to_le_bytes());
+        bytes[4..8].copy_from_slice(&count.to_le_bytes());
+        bytes
+    }
+    fn doubles(values: &[f64]) -> Vec<u8> {
+        values.iter().flat_map(|n| n.to_le_bytes()).collect()
+    }
+    fn circle(x: f64, z: f64, r: f64) -> (u32, Vec<u8>) {
+        (2, doubles(&[x, 0., z, r, 0., 0., 1.]))
+    }
+    #[test]
+    fn bolt_circle_is_not_connected_to_flange_axis() {
+        let mut output = Output::default();
+        let graphics = stream(vec![
+            circle(0., 0., 100.),
+            circle(0., 10., 100.),
+            circle(40., 0., 5.),
+            circle(40., 10., 5.),
+        ]);
+        assert!(process_proxy_graphics(
+            &graphics,
+            Matrix4::identity(),
+            [255, 255, 255],
+            "test",
+            &mut output
+        ));
+        let mesh = &output.meshes[0];
+        for face in mesh.faces.chunks_exact(4) {
+            let triangle = [
+                mesh.points[face[1]],
+                mesh.points[face[2]],
+                mesh.points[face[3]],
+            ];
+            let radii = triangle.map(|p| ((p[0] - 40.).powi(2) + p[1].powi(2)).sqrt());
+            let belongs_to_bolt = radii.iter().all(|r| (*r - 5.).abs() < 1e-6);
+            let belongs_to_flange = triangle
+                .iter()
+                .all(|p| (p[0].hypot(p[1]) - 100.).abs() < 1e-6);
+            assert!(
+                belongs_to_bolt || belongs_to_flange,
+                "triangle incorrectly joins separate axes"
+            );
+        }
+    }
+    #[test]
+    fn polygon_hole_is_not_filled() {
+        let mut p = vec![
+            [0., 0., 0.],
+            [4., 0., 0.],
+            [4., 4., 0.],
+            [0., 4., 0.],
+            [1., 1., 0.],
+            [1., 3., 0.],
+            [3., 3., 0.],
+            [3., 1., 0.],
+        ];
+        let mut faces = Vec::new();
+        append_proxy_polygon(&mut p, &[vec![0, 1, 2, 3], vec![4, 5, 6, 7]], &mut faces);
+        let area: f64 = faces
+            .chunks_exact(4)
+            .map(|t| {
+                let a = p[t[1]];
+                let b = p[t[2]];
+                let c = p[t[3]];
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.
+            })
+            .sum();
+        assert!((area - 12.).abs() < 1e-8, "annulus area was {}", area);
+    }
+    #[test]
+    fn explicit_polygon_keeps_saved_true_color() {
+        let mut payload = 3u32.to_le_bytes().to_vec();
+        payload.extend(doubles(&[0., 0., 0., 1., 0., 0., 0., 1., 0.]));
+        let graphics = stream(vec![
+            (22, 0xC2123456u32.to_le_bytes().to_vec()),
+            (7, payload),
+        ]);
+        let mut output = Output::default();
+        assert!(process_proxy_graphics(
+            &graphics,
+            Matrix4::identity(),
+            [255; 3],
+            "test",
+            &mut output
+        ));
+        assert_eq!(output.meshes[0].color, [0x12, 0x34, 0x56]);
     }
 }

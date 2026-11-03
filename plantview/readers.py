@@ -312,11 +312,10 @@ def read_dwg(
         _, _, layer_name = parse_dwg_mesh_info(m['name'])
         raw_color = m.get('color')
 
-        is_default_white_or_gray = raw_color in ([255, 255, 255], [190, 201, 212], [230, 230, 230], None)
-        if not is_default_white_or_gray:
-            color_rgb = list(raw_color)
-        else:
+        if raw_color is None:
             color_rgb = list(resolve_layer_color(layer_name))
+        else:
+            color_rgb = list(raw_color)
 
         if any(tag in m['name'] for tag in ('[Plant3D]', '[Plant3D-Mesh]', '[Plant3D-Fitting]', '[Plant3D-Structure]')):
             proxy_converted_count += 1
@@ -352,7 +351,7 @@ def read_dwg(
     cov = data.get('coverage', {})
     status_label = {
         'complete': 'COMPLETO (100% dos sólidos reconstruídos com sucesso)',
-        'partial': f'PARCIAL ({cov.get("failed_solids", 0)} sólidos com erro/incompletos)',
+        'partial': f'PARCIAL ({cov.get("failed_solids", 0) + cov.get("partial_solids", 0)} sólidos com erro/incompletos)',
         'empty': 'VAZIO (Nenhum sólido 3D reconstruído)'
     }.get(cov.get('status', 'complete'), cov.get('status', 'Indefinido'))
 
@@ -368,6 +367,7 @@ def read_dwg(
         f"  ├─ Recuperados via Proxy GraphicData Fallback: {cov.get('proxy_fallback', 0)}",
         f"  ├─ Recuperados via Wireframe 3D Fallback: {cov.get('wire_fallback', 0)}",
         f"  └─ Sólidos com Falha na Reconstrução: {cov.get('failed_solids', 0)}",
+        f"Faces ACIS não reconstruídas: {cov.get('missing_faces', 0)}",
         f"Malhas 3D Exibidas no Visor: {len(parts)}",
         f"Objetos PROXY (Plant 3D / Estruturas) no Visor: {proxy_converted_count}",
         f"Xrefs Carregadas Automaticamente: {xrefs_loaded_count}",

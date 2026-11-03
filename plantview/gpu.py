@@ -55,20 +55,23 @@ def optimize_actor(actor):
 
 def geometry_fingerprint(mesh) -> Optional[Tuple[Tuple[int, int, str], np.ndarray]]:
     """Calculates invariant topology fingerprint to detect repeated components (valves, flanges, bolts)."""
-    points = np.asarray(mesh.points, dtype=np.float32)
+    points = np.asarray(mesh.points, dtype=np.float64)
     n_pts = len(points)
     if n_pts == 0:
         return None
-    origin = points[0].astype(np.float64)
+    origin = points[0].copy()
     n_cells = int(getattr(mesh, 'n_cells', 0))
-    # Fast path for large unique meshes (>1500 vertices): fingerprint by first/mid/last relative points
-    if n_pts > 1500:
-        sample = np.ascontiguousarray(points[[0, n_pts // 3, (2 * n_pts) // 3, n_pts - 1]] - points[0])
-        digest = hashlib.blake2b(sample.tobytes(), digest_size=16).hexdigest()
-        return (n_pts, n_cells, digest), origin
-    relative = np.ascontiguousarray(np.round(points - points[0], 4))
-    digest = hashlib.blake2b(relative.tobytes(), digest_size=16).hexdigest()
-    return (n_pts, n_cells, digest), origin
+    # Every coordinate and every connectivity index participates: four sampled
+    # vertices cannot establish that two CAD parts have the same geometry.
+    relative = np.ascontiguousarray(np.round(points - origin, 6))
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(relative.tobytes())
+    for attribute in ('faces', 'lines', 'verts', 'strips'):
+        topology = getattr(mesh, attribute, None)
+        if topology is not None:
+            digest.update(attribute.encode('ascii'))
+            digest.update(np.ascontiguousarray(topology,dtype=np.int64).tobytes())
+    return (n_pts, n_cells, digest.hexdigest()), origin
 
 
 def make_instance_actor(plot, source, origins, color):

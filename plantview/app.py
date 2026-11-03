@@ -218,7 +218,7 @@ class Window(W.QMainWindow):
         self.statusBar().showMessage(
             'Pronto | Olhar: Botão esquerdo • Pan: Botão meio • Orbit: Shift + Botão meio • Zoom: Scroll • F5: Atualizar • Ctrl+Z: Desfazer câmera'
         )
-        self.log.appendPlainText('NavModel Manager v0.0.7 iniciado com renderização OpenGL acelerada por GPU.')
+        self.log.appendPlainText(f'NavModel Manager v{VERSION} iniciado com renderização OpenGL acelerada por GPU.')
 
     def style_dock(self, dock):
         bar = W.QWidget(dock)
