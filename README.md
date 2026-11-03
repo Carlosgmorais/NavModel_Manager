@@ -64,3 +64,5 @@ Cores explícitas, incluindo branco e cinza, são preservadas. ByBlock e ByLayer
 Os testes nativos incluem revisões obsoletas, páginas múltiplas, identificadores de 64 bits, diretórios truncados, aberturas e cores por face. Execute `cargo test --release --manifest-path dwg-reader/Cargo.toml` para reproduzi-los. Os modelos reais servem como validação adicional; não há exceções por nome no leitor.
 
 O relatório diferencia sólidos incompletos e faces ACIS não reconstruídas. Entidades proprietárias sem bloco nativo ou geometria de superfície compatível continuam dependentes dos dados proxy disponíveis no arquivo. As coordenadas não são realinhadas por aproximação.
+
+Correção pontual do Doghouse: perfis estruturais Plant com seções coincidentes são expandidos pelo eixo salvo antes da triangulação das tampas. Validação no DH-100001_DOGHOUSE: 38 perfis recuperados e 3.970 malhas restantes idênticas; nenhum sólido ou face incompleto nesse arquivo.

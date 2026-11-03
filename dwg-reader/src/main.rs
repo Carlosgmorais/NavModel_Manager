@@ -329,7 +329,50 @@ fn append_proxy_polygon(points: &mut Vec<[f64; 3]>, rings: &[Vec<usize>], faces:
 }
 
 /// Decode Autodesk Proxy Graphics SHELL (opcode 9) into raw local points and faces.
-fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)> {
+// Expand the original saved profile before polygon triangulation can append
+// cap vertices. The paired halves and the saved axis identify a collapsed beam.
+fn expand_collapsed_shell(local_pts: &mut [[f64; 3]], axis: Option<[Vector3; 2]>) {
+    // Check for Plant 3D AcPpDb3dStructureMember collapsed cross-section shell:
+    // When an AcPpDb3dStructureMember is saved without Object Enabler body expansion,
+    // its SHELL has 2*M vertices where the first M and second M vertices are identical
+    // (a 0-thickness mid-beam cross-section slice) preceded by a 2-point Opcode 6 beam axis!
+    if let Some([p_start, p_end]) = axis {
+        let axis_vec = p_end - p_start;
+        let axis_len = axis_vec.length();
+        let n_v = local_pts.len();
+        if n_v >= 6 && n_v % 2 == 0 && axis_len > 20.0 {
+            let half = n_v / 2;
+            let mut collapsed = true;
+            for k in 0..half {
+                let dx = local_pts[k][0] - local_pts[k + half][0];
+                let dy = local_pts[k][1] - local_pts[k + half][1];
+                let dz = local_pts[k][2] - local_pts[k + half][2];
+                if dx * dx + dy * dy + dz * dz > 1.0 {
+                    collapsed = false;
+                    break;
+                }
+            }
+            if collapsed {
+                let dir = axis_vec * (1.0 / axis_len);
+                let mid = (p_start + p_end) * 0.5;
+                for k in 0..half {
+                    let v = Vector3::new(local_pts[k][0], local_pts[k][1], local_pts[k][2]);
+                    let offset_from_mid = v - mid;
+                    let in_plane = offset_from_mid - dir * offset_from_mid.dot(&dir);
+                    let v0 = p_start + in_plane;
+                    let v1 = p_end + in_plane;
+                    local_pts[k] = [v0.x, v0.y, v0.z];
+                    local_pts[k + half] = [v1.x, v1.y, v1.z];
+                }
+            }
+        }
+    }
+}
+
+fn parse_proxy_shell_local(
+    payload: &[u8],
+    axis: Option<[Vector3; 2]>,
+) -> Option<(Vec<[f64; 3]>, Vec<usize>)> {
     if payload.len() < 12 {
         return None;
     }
@@ -374,6 +417,8 @@ fn parse_proxy_shell_local(payload: &[u8]) -> Option<(Vec<[f64; 3]>, Vec<usize>)
         let z = read_f64(&mut cur)?;
         points.push([x, y, z]);
     }
+
+    expand_collapsed_shell(&mut points, axis);
 
     let face_entry_count = read_u32(&mut cur)? as usize;
     if face_entry_count == 0 || face_entry_count > 3_000_000 {
@@ -1236,47 +1281,9 @@ fn process_proxy_graphics(
             }
             9 => {
                 // Opcode 9 = SHELL
-                if let Some((mut local_pts, faces)) = parse_proxy_shell_local(payload) {
-                    // Check for Plant 3D AcPpDb3dStructureMember collapsed cross-section shell:
-                    // When an AcPpDb3dStructureMember is saved without Object Enabler body expansion,
-                    // its SHELL has 2*M vertices where the first M and second M vertices are identical
-                    // (a 0-thickness mid-beam cross-section slice) preceded by a 2-point Opcode 6 beam axis!
-                    if let Some([p_start, p_end]) = last_poly_segment {
-                        let axis_vec = p_end - p_start;
-                        let axis_len = axis_vec.length();
-                        let n_v = local_pts.len();
-                        if n_v >= 6 && n_v % 2 == 0 && axis_len > 20.0 {
-                            let half = n_v / 2;
-                            let mut collapsed = true;
-                            for k in 0..half {
-                                let dx = local_pts[k][0] - local_pts[k + half][0];
-                                let dy = local_pts[k][1] - local_pts[k + half][1];
-                                let dz = local_pts[k][2] - local_pts[k + half][2];
-                                if dx * dx + dy * dy + dz * dz > 1.0 {
-                                    collapsed = false;
-                                    break;
-                                }
-                            }
-                            if collapsed {
-                                let dir = axis_vec * (1.0 / axis_len);
-                                let mid = (p_start + p_end) * 0.5;
-                                for k in 0..half {
-                                    let v = Vector3::new(
-                                        local_pts[k][0],
-                                        local_pts[k][1],
-                                        local_pts[k][2],
-                                    );
-                                    let offset_from_mid = v - mid;
-                                    let in_plane =
-                                        offset_from_mid - dir * offset_from_mid.dot(&dir);
-                                    let v0 = p_start + in_plane;
-                                    let v1 = p_end + in_plane;
-                                    local_pts[k] = [v0.x, v0.y, v0.z];
-                                    local_pts[k + half] = [v1.x, v1.y, v1.z];
-                                }
-                            }
-                        }
-                    }
+                if let Some((local_pts, faces)) =
+                    parse_proxy_shell_local(payload, last_poly_segment)
+                {
                     let points = local_pts
                         .into_iter()
                         .map(|p| {
@@ -2606,6 +2613,70 @@ fn main() {
 #[cfg(test)]
 mod fidelity_tests {
     use super::*;
+    #[test]
+    fn concave_plant_steel_profile_is_expanded_before_cap_triangulation() {
+        let profile = [
+            [-3., -4.],
+            [3., -4.],
+            [3., -2.],
+            [1., -2.],
+            [1., 2.],
+            [3., 2.],
+            [3., 4.],
+            [-3., 4.],
+            [-3., 2.],
+            [-1., 2.],
+            [-1., -2.],
+            [-3., -2.],
+        ];
+        let mut payload = 24u32.to_le_bytes().to_vec();
+        for _ in 0..2 {
+            for p in profile {
+                payload.extend(doubles(&[p[0], p[1], 500.]));
+            }
+        }
+        let mut entries = vec![12i32];
+        entries.extend(0..12);
+        entries.push(12);
+        entries.extend((12..24).rev());
+        for i in 0..12 {
+            let j = (i + 1) % 12;
+            entries.extend([4, i, j, j + 12, i + 12]);
+        }
+        payload.extend((entries.len() as u32).to_le_bytes());
+        for e in entries {
+            payload.extend(e.to_le_bytes());
+        }
+        let graphics = stream(vec![
+            (6, {
+                let mut p = 2u32.to_le_bytes().to_vec();
+                p.extend(doubles(&[0., 0., 0., 0., 0., 1000.]));
+                p
+            }),
+            (9, payload),
+        ]);
+        let mut out = Output::default();
+        assert!(process_proxy_graphics(
+            &graphics,
+            Matrix4::identity(),
+            [255; 3],
+            "beam",
+            &mut out
+        ));
+        let mesh = &out.meshes[0];
+        let bounds = compute_bounds(&mesh.points).unwrap();
+        assert_eq!(bounds, [-3., -4., 0., 3., 4., 1000.]);
+        for t in mesh.faces.chunks_exact(4) {
+            let v = [t[1], t[2], t[3]].map(|i| {
+                let p = mesh.points[i];
+                Vector3::new(p[0], p[1], p[2])
+            });
+            assert!(
+                (v[1] - v[0]).cross(&(v[2] - v[0])).length_squared() > 1e-12,
+                "collapsed steel face"
+            );
+        }
+    }
     #[test]
     fn face_true_color_overrides_aci_without_leaking_to_other_faces() {
         use acadrust::entities::acis::{SatDocument, SatPointer, SatRecord, SatToken};
