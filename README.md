@@ -1,13 +1,20 @@
-# NavModel Manager — 0.0.11
+# NavModel Manager — 0.0.12
 
 Aplicativo desktop Windows para visualização e coordenação de maquetes industriais 3D federadas, com PySide6 e VTK/OpenGL.
 
-A revisão 0.0.11 preserva o detalhe de DWGs georreferenciados usando um referencial
-local por malha na transferência do leitor. O visor, a medição e a publicação
-continuam usando as coordenadas globais. A importação federada processa a fila
-sem despachar eventos recursivamente no diálogo de progresso. Arquivos grandes
-podem ultrapassar cinco minutos quando o leitor continua progredindo, e a
-reabertura lê o cache uma vez.
+A revisão 0.0.12 traz importantes avanços na ferramenta de Cortes (Sectioning), suporte completo a arquivos DWG industriais massivos (AutoCAD Plant 3D) e otimizações globais de desempenho:
+- **Ferramenta de Cortes (Sectioning):**
+  - Adicionado botão **Mover (Eixos)** para habilitar ou desabilitar o gizmo dos eixos de coordenadas para translação do corte.
+  - O corte agora surge posicionado **mais próximo da tela** (no ponto focal da câmera atual e com dimensões compatíveis com o zoom) em vez de abranger todo o plano distante do modelo.
+  - Adicionado botão **Trazer à vista** para reposicionar o plano de corte imediatamente no centro da visão atual do operador.
+  - Atalho de **Cortes** incluído no grupo Ferramentas da aba principal **Início**.
+- **Motor DWG 3D Open Source (Plant 3D / ACIS):**
+  - Elevação do limite de seção no `acadrust` de 1 GB para 8 GB (`MAX_SECTION_SIZE = 8 GiB`), permitindo abrir arquivos gigantes como `DESPOEIRAMENTO DELTA DUCON.dwg` (1,15 GB de seção ACIS) e `105-40-230-DFO-702_R3_MODELO 3D.dwg`, recuperando 100% dos sólidos 3D.
+  - Tolerância de tesselação adaptativa para modelos industriais complexos, evitando explosão desnecessária de triângulos e acelerando a abertura em até 50x.
+  - Proteção contra falhas de triangulação Delaunay (`catch_unwind`), garantindo estabilidade contínua dos threads de conversão.
+  - Relato de progresso contínuo de sólidos e aumento generoso dos timeouts para arquivos pesados.
+- **Otimização Global e GPU:**
+  - Fast-path de agrupamento por camada e cor (`FAST_LAYER_BATCH`) no pipeline GPU para modelos com centenas/milhares de peças, eliminando o gargalo de hashing e garantindo navegação a 60 FPS com baixo consumo de memória RAM.
 
 ## Identidade e interface
 

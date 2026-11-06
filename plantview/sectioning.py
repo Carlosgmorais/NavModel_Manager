@@ -223,12 +223,26 @@ class SectioningTool(QtCore.QObject):
         self.dock.hide(); self._sync_controls()
 
     def add_ribbon(self, ribbon):
-        page = ribbon.page('Sectioning Tools')
+        page = ribbon.page('Cortes')
         group = ribbon.group(page, 'Cortes')
         self._ribbon_enable = group.add_large_button('Ativar\ncortes', 'select', self.toggle,
                                                     'Enable Sectioning — ativar/desativar cortes')
         self._ribbon_enable.setCheckable(True)
-        for mode, text in [('plane', 'Plane'), ('box', 'Box')]:
+        self._ribbon_move = group.add_large_button('Mover\n(Eixos)', 'pan', self.toggle_move,
+                                                  'Mover corte: habilita o eixo de coordenadas para translação')
+        self._ribbon_move.setCheckable(True)
+        self._ribbon_transforms['move'] = self._ribbon_move
+
+        button_rot = group.add_large_button('Girar', 'orbit',
+                                           lambda checked=False: self.set_transform_mode('rotate'),
+                                           'Girar corte: exibe anéis de rotação')
+        button_rot.setCheckable(True)
+        self._ribbon_transforms['rotate'] = button_rot
+
+        group.add_large_button('Trazer à\nvista', 'look', self.fit_to_view,
+                               'Trazer o plano de corte mais próximo para o centro da tela atual')
+
+        for mode, text in [('plane', 'Plano'), ('box', 'Caixa')]:
             button = group.add_large_button(text, 'isolate', lambda checked=False, m=mode: self.set_mode(m),
                                             'Corte por plano' if mode == 'plane' else 'Caixa orientada com seis faces ajustáveis')
             button.setCheckable(True); self._ribbon_modes[mode] = button
@@ -238,11 +252,7 @@ class SectioningTool(QtCore.QObject):
         group.add_large_button('Alinhar\nvista', 'look', self.align_view, 'Alinhar à direção da câmera')
         group.add_large_button('Ajustar\nseleção', 'select', self.fit_selection, 'Ajustar o corte aos limites da seleção')
         self.invert_button = group.add_large_button('Inverter', 'reset', self.invert, 'Inverter o lado conservado do plano')
-        group = ribbon.group(page, 'Transformação')
-        for mode, text in [('move', 'Mover'), ('rotate', 'Girar')]:
-            button = group.add_large_button(text, 'pan' if mode == 'move' else 'orbit',
-                                           lambda checked=False, m=mode: self.set_transform_mode(m))
-            button.setCheckable(True); self._ribbon_transforms[mode] = button
+        group = ribbon.group(page, 'Opções')
         group.add_large_button('Redefinir', 'reset', self.reset, 'Enquadrar o corte em todos os modelos')
         group.add_large_button('Valores', 'properties', self.show_panel, 'Posição, rotação e seis faces em coordenadas do modelo')
         self._sync_controls()
@@ -254,12 +264,64 @@ class SectioningTool(QtCore.QObject):
     def toggle(self, checked=False):
         self.set_enabled(not self.state.enabled)
 
+    def toggle_move(self, checked=None):
+        """Enable translation coordinate axes / gizmo and bring plane closer to screen view."""
+        if not self.state.enabled:
+            self.set_enabled(True)
+            self.fit_to_view()
+            self.transform_mode = 'move'
+            self.show_handles = True
+            self._changed()
+            return
+
+        if self.transform_mode == 'move' and self.show_handles:
+            if checked is False:
+                self.show_handles = False
+                self._changed()
+                return
+
+        self.transform_mode = 'move'
+        self.show_handles = True
+
+        # If plane is far away from camera viewpoint, bring it closer!
+        camera = self.window.plot.camera
+        focal = np.array(camera.GetFocalPoint(), dtype=float)
+        cam_pos = np.array(camera.GetPosition(), dtype=float)
+        cam_dist = float(np.linalg.norm(cam_pos - focal))
+        plane_dist = float(np.linalg.norm(self.state.center - focal))
+        if plane_dist > 2.0 * max(cam_dist, 1.0):
+            self.fit_to_view()
+        else:
+            self._changed()
+
+    def fit_to_view(self):
+        """Position and scale cutting plane close to the current camera viewpoint."""
+        camera = self.window.plot.camera
+        focal = np.array(camera.GetFocalPoint(), dtype=float)
+        pos = np.array(camera.GetPosition(), dtype=float)
+        view_dir = focal - pos
+        dist = float(np.linalg.norm(view_dir))
+
+        self.state.center = focal.copy()
+
+        if camera.GetParallelProjection():
+            span = float(camera.GetParallelScale() * 2.0)
+        else:
+            angle_rad = math.radians(float(camera.GetViewAngle()))
+            span = 2.0 * max(dist, 1e-3) * math.tan(angle_rad * 0.5)
+
+        size = max(span * 0.45, 0.5)
+        self.state.half_sizes = np.array([size, size, size], dtype=float)
+        self._initialized = True
+        self._changed()
+
     def set_enabled(self, enabled):
         if self._syncing:
             return
         self.state.enabled = bool(enabled)
         if enabled and not self._initialized:
-            self._fit_models(); self._initialized = True
+            self.fit_to_view()
+            self._initialized = True
         if enabled:
             self.show_panel()
         self.drag = None
@@ -401,7 +463,7 @@ class SectioningTool(QtCore.QObject):
             for mode, button in self._ribbon_modes.items():
                 button.setChecked(state.mode == mode)
             for mode, button in self._ribbon_transforms.items():
-                button.setChecked(self.transform_mode == mode)
+                button.setChecked(state.enabled and self.transform_mode == mode and self.show_handles)
         finally:
             self._syncing = False
 

@@ -24,7 +24,7 @@ pub(crate) const MAX_SYSTEM_PAGE_SIZE: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_DATA_PAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Largest decompressed size of one section; it also bounds the sum of the section's pages.
-pub(crate) const MAX_SECTION_SIZE: usize = 1024 * 1024 * 1024;
+pub(crate) const MAX_SECTION_SIZE: usize = 8 * 1024 * 1024 * 1024;
 
 /// Allocates a zero-filled buffer, reporting an allocation failure as an error.
 ///
@@ -216,7 +216,7 @@ mod tests {
         );
         rejected(
             &info,
-            "size 1099511627776 is outside the accepted range 0..=1073741824",
+            "size 1099511627776 is outside the accepted range 0..=8589934592",
         );
     }
 
@@ -270,7 +270,7 @@ mod tests {
         let info = header_info(false, section(1 << 40, 0xF800, 0, vec![]), HashMap::new());
         rejected(
             &info,
-            "size 1099511627776 is outside the accepted range 0..=1073741824",
+            "size 1099511627776 is outside the accepted range 0..=8589934592",
         );
         // 300 pages of 4 MiB add up to more than one section may hold.
         let pages = (1..=300)

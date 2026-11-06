@@ -77,8 +77,15 @@ impl ConstrainedMesh {
             for index in 0..ring.len() {
                 let from = ring[index];
                 let to = ring[(index + 1) % ring.len()];
-                if from == to || mesh.triangulation.try_add_constraint(from, to).is_empty() {
+                if from == to {
                     return None;
+                }
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    mesh.triangulation.try_add_constraint(from, to)
+                }));
+                match res {
+                    Ok(edges) if !edges.is_empty() => {}
+                    _ => return None,
                 }
             }
         }
@@ -119,15 +126,20 @@ impl ConstrainedMesh {
         if from != to {
             let origin = self.origin;
             let scale = self.scale;
-            let edges = self
-                .triangulation
-                .add_constraint_and_split(from, to, |position| ParameterVertex {
-                    parameters: [
-                        origin[0] + position.x * scale[0],
-                        origin[1] + position.y * scale[1],
-                    ],
-                    position,
-                });
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.triangulation
+                    .add_constraint_and_split(from, to, |position| ParameterVertex {
+                        parameters: [
+                            origin[0] + position.x * scale[0],
+                            origin[1] + position.y * scale[1],
+                        ],
+                        position,
+                    })
+            }));
+            let edges = match res {
+                Ok(e) => e,
+                Err(_) => return None,
+            };
             if edges.is_empty() {
                 return None;
             }

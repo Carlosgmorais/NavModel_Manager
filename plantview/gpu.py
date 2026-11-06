@@ -152,6 +152,62 @@ def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str]
             'mode': 'DIAGNOSTIC_ISOLATED' if force_isolated else 'NATIVE_BATCH'
         }
 
+    if len(parts) > 300:
+        # Fast path for massive industrial models (>300 parts):
+        # Directly batch parts by (layer, color) into compound GPU actors using C++ vtkAppendPolyData.
+        # Avoids expensive cryptographic hashing overhead on thousands of meshes.
+        grouped_by_layer_color = defaultdict(list)
+        for name, mesh in parts:
+            color_data = mesh.field_data.get('plantview_rgb')
+            color = tuple(int(x)/255. for x in color_data[0]) if color_data is not None else (.74, .79, .83)
+            layer = getattr(mesh, '_plantview_layer', None)
+            if not layer:
+                layer_data = mesh.field_data.get('plantview_layer')
+                layer = str(layer_data[0]) if layer_data is not None and len(layer_data) > 0 else '0'
+            grouped_by_layer_color[(layer, color)].append((name, mesh))
+
+        actors, names = [], []
+        total_triangles = 0
+        for (layer, color), items in grouped_by_layer_color.items():
+            if len(items) > 1:
+                try:
+                    mesh_list = [m for _, m in items]
+                    merged_mesh = combine_poly_datas(mesh_list)
+                    actor = plot.add_mesh(merged_mesh, color=color, smooth_shading=False,
+                                          reset_camera=False, render=False)
+                    optimize_actor(actor)
+                    actor.SetVisibility(visible)
+                    actor._plantview_name = f'Camada: {layer} ({len(items)} peças)'
+                    actor._plantview_names = [item[0] for item in items]
+                    actor._plantview_layer = layer
+                    actor._plantview_color = color
+                    actor._plantview_bounds = getattr(merged_mesh, 'bounds', None)
+                    actors.append(actor)
+                    names.append(f'{layer} ({len(items)} peças)')
+                    total_triangles += getattr(merged_mesh, 'n_cells', 1)
+                    continue
+                except Exception:
+                    pass
+            for name, mesh in items:
+                actor = plot.add_mesh(mesh, color=color, smooth_shading=False,
+                                      reset_camera=False, render=False)
+                optimize_actor(actor)
+                actor.SetVisibility(visible)
+                actor._plantview_name = name
+                actor._plantview_layer = layer
+                actor._plantview_color = color
+                actors.append(actor)
+                names.append(name)
+                total_triangles += getattr(mesh, 'n_cells', 1)
+        return actors, names, {
+            'gpu_actors': len(actors),
+            'instanced_parts': 0,
+            'instance_groups': 0,
+            'original_parts': len(parts),
+            'total_triangles': total_triangles,
+            'mode': 'FAST_LAYER_BATCH'
+        }
+
     buckets = defaultdict(list)
     for name, mesh in parts:
         color_data = mesh.field_data.get('plantview_rgb')

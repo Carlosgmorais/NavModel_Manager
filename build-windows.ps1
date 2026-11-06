@@ -1,4 +1,4 @@
-# Build script for NavModel Manager 0.0.11 on Windows 11 x64
+# Build script for NavModel Manager 0.0.12 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
@@ -64,7 +64,7 @@ $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  NAVMODEL MANAGER 0.0.11 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  NAVMODEL MANAGER 0.0.12 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
     Write-Host "Cargo:  $cargoExe"
@@ -174,7 +174,7 @@ try {
     $desktopPath = [Environment]::GetFolderPath('Desktop')
     if (-not $CopyTo) { $CopyTo = $desktopPath }
     if ($CopyTo -and (Test-Path -LiteralPath $CopyTo)) {
-        $appDestination = Join-Path $CopyTo 'NavModel Manager 0.0.11'
+        $appDestination = Join-Path $CopyTo 'NavModel Manager 0.0.12'
         New-Item -ItemType Directory -Path $appDestination -Force | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $root 'dist/NavModel Manager') -Force |
             Copy-Item -Destination $appDestination -Recurse -Force
@@ -212,7 +212,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.11_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.12_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

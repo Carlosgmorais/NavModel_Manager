@@ -1502,13 +1502,16 @@ fn process_solid_entity(
             let mut total_missing = 0;
             let mut all_local_pts: Vec<[f64; 3]> = Vec::new();
             let tol = if acis_data.size() > 40_000 {
-                mesh::TessellationTolerance::new(0.55, 0.5)
+                mesh::TessellationTolerance::new(0.55, 1.5)
             } else {
-                mesh::TessellationTolerance::new(0.35, 0.5)
+                mesh::TessellationTolerance::new(0.40, 1.0)
             };
 
             for body in bodies.iter() {
-                for local in tessellate_local(body, &sat, tol) {
+                let locals = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    tessellate_local(body, &sat, tol)
+                })).unwrap_or_default();
+                for local in locals {
                     total_missing += local.missing_faces;
                     total_v += local.local_points.len();
                     total_t += local.faces.len() / 4;
@@ -2313,7 +2316,7 @@ fn prewarm_acis_cache_parallel(
                         break;
                     }
                     let (h, acis_data, solid_wires) = jobs_ref[idx];
-                    if idx % 32 == 0 {
+                    if idx % 8 == 0 || idx + 1 == jobs_ref.len() {
                         eprintln!("[plantview-dwg progress] {idx}/{} sólidos encaminhados", jobs_ref.len());
                     }
                     let Some(sat) = acis_data.parse() else {
@@ -2330,15 +2333,22 @@ fn prewarm_acis_cache_parallel(
                             loss.broken.len()
                         );
                     }
-                    let tol = if acis_data.size() > 40_000 {
-                        mesh::TessellationTolerance::new(0.55, 0.5)
+                    let tol = if jobs_ref.len() > 3000 {
+                        mesh::TessellationTolerance::new(0.60, 5.0)
+                    } else if jobs_ref.len() > 500 {
+                        mesh::TessellationTolerance::new(0.55, 2.5)
+                    } else if acis_data.size() > 40_000 {
+                        mesh::TessellationTolerance::new(0.55, 1.5)
                     } else {
-                        mesh::TessellationTolerance::new(0.35, 0.5)
+                        mesh::TessellationTolerance::new(0.40, 1.0)
                     };
                     let mut local_meshes = Vec::new();
                     let mut all_local_pts: Vec<[f64; 3]> = Vec::new();
                     for body in bodies.iter() {
-                        for local in tessellate_local(body, &sat, tol) {
+                        let locals = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            tessellate_local(body, &sat, tol)
+                        })).unwrap_or_default();
+                        for local in locals {
                             if local.missing_faces > 0 {
                                 eprintln!(
                                     "[DWG face loss] {:X} missing={} triangles={}",

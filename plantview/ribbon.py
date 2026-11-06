@@ -98,7 +98,7 @@ class NavisRibbonBar(W.QWidget):
         nav.add_large_button('HUD','properties',window.toggle_hud,'Coordenadas da câmera')
         nav.add_large_button('Enquadrar','reset',window.plot.reset_camera,'Enquadrar modelos','F')
         tool = self.group(home,'Ferramentas')
-        for t,i,c in [('Propriedades','properties',window.show_properties),('Camadas','layers',window.show_layer_manager),('Medir','measure',window.toggle_measure),('Opções','gpu',window.show_gpu_info)]:
+        for t,i,c in [('Propriedades','properties',window.show_properties),('Camadas','layers',window.show_layer_manager),('Cortes','select',window.section_tool.toggle_move),('Medir','measure',window.toggle_measure),('Opções','gpu',window.show_gpu_info)]:
             tool.add_large_button(t,i,c)
         view = self.page('Visualização')
         g = self.group(view,'Câmera')

@@ -230,8 +230,9 @@ def read_dwg(
                         if progress_callback:
                             if progress_callback(25.0 + min(25.0, elapsed * 2.0), f'Loading {file_name} — {int(elapsed)} s decorridos...') is False:
                                 raise InterruptedError('Carregamento cancelado pelo usuário.')
-                        if now - last_activity > 300 or elapsed > 1800:
-                            raise TimeoutError('O leitor DWG parou de informar progresso ou excedeu 30 minutos.')
+                        # Generous timeout for massive industrial DWGs (> 500 MB / tens of thousands of solids)
+                        if now - last_activity > 1200 or elapsed > 7200:
+                            raise TimeoutError('O leitor DWG parou de informar progresso ou excedeu o limite máximo de tempo.')
                         time.sleep(0.15)
                 finally:
                     if proc.poll() is None:
