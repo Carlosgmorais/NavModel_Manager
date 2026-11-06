@@ -947,6 +947,15 @@ fn hairline_face(body: &Body, face: FaceKey) -> bool {
 
 /// Fast mesh-only tessellation for 3D viewport rendering (skips wireframe edge classification and cone silhouette recovery).
 pub fn tessellate_fast(body: &Body, tolerance: TessellationTolerance) -> BodyMesh {
+    tessellate_for_render(body, tolerance, false)
+}
+
+/// Like tessellate_fast, with face provenance for per-face materials.
+pub fn tessellate_for_render(
+    body: &Body,
+    tolerance: TessellationTolerance,
+    track_faces: bool,
+) -> BodyMesh {
     let _normals = SplineNormals::open();
     let schedules = body_edge_schedules(body, tolerance);
     let mut out = BodyMesh::default();
@@ -956,6 +965,10 @@ pub fn tessellate_fast(body: &Body, tolerance: TessellationTolerance) -> BodyMes
             .or_else(|| finer_face(body, face_key, max_angle, tolerance.linear))
         {
             Some(mesh) => {
+                if track_faces {
+                    out.triangle_faces
+                        .extend(std::iter::repeat(face_key).take(mesh.triangles.len()));
+                }
                 out.mesh.absorb(mesh);
             }
             None if hairline_face(body, face_key) => {}

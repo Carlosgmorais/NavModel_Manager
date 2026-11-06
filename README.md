@@ -1,6 +1,13 @@
-# NavModel Manager — 0.0.10
+# NavModel Manager — 0.0.11
 
 Aplicativo desktop Windows para visualização e coordenação de maquetes industriais 3D federadas, com PySide6 e VTK/OpenGL.
+
+A revisão 0.0.11 preserva o detalhe de DWGs georreferenciados usando um referencial
+local por malha na transferência do leitor. O visor, a medição e a publicação
+continuam usando as coordenadas globais. A importação federada processa a fila
+sem despachar eventos recursivamente no diálogo de progresso. Arquivos grandes
+podem ultrapassar cinco minutos quando o leitor continua progredindo, e a
+reabertura lê o cache uma vez.
 
 ## Identidade e interface
 
@@ -30,11 +37,43 @@ A identidade foi extraída dos PNGs aprovados em `resources/reference`. A geomet
 | Medir | M |
 | Abrir / salvar projeto | Ctrl+O / Ctrl+S |
 
+## Cortes e medição
+
+Na aba **Sectioning Tools**, ative o corte e escolha **Plano** ou **Box**.
+Para um plano, escolha X, Y ou Z, alinhe à vista, ajuste à seleção ou inverta o lado visível.
+Arraste as setas vermelha, verde e azul para mover, ou use **Girar** e arraste os anéis.
+No Box, as seis setas de face ajustam apenas a face escolhida. O painel **Valores**
+permite informar posição, ângulos e dimensões em metros.
+
+Na medição, o quadrado indica a captura no modelo. O painel oferece face, vértice
+e aresta da malha. Clique nos dois pontos para obter distância e ΔX/ΔY/ΔZ com
+sinal em metros. O índice espacial reutiliza a geometria e ignora a parte removida pelo corte.
+
+## Publicar Maquete Web
+
+Abra **Saída → Publicar Maquete Web**. A análise mostra objetos e grupos do visor,
+triângulos, tamanho dos arquivos de origem e estimativas de volume e memória.
+Os limites iniciais do HTML são 20.000 objetos, 1,5 milhão de triângulos, 80 MiB
+de arquivo estimado e 768 MiB de memória estimada. Ajuste os valores no diálogo
+conforme a capacidade do computador do destinatário.
+
+- **HTML único** abre diretamente em navegador com WebGL, inclusive offline.
+- **EXE portátil** abre no navegador pelo endereço local `127.0.0.1`. O arquivo Windows
+  x64 contém a geometria compactada e carrega blocos progressivamente. O destinatário
+  precisa apenas do arquivo e de um navegador com WebGL. O servidor local encerra
+  após três minutos sem atividade.
+
+Ambos preservam posicionamento, grupos, visibilidade, cores e propriedades disponíveis.
+O visualizador oferece órbita, pan, zoom, plano, Box e medição por face. A publicação
+herda os limites do leitor de origem. Avisos relevantes do DWG são apresentados
+quando disponíveis. Maquetes grandes ainda precisam caber na memória do navegador.
+O EXE não tem assinatura digital e pode exigir liberação pela política de TI do destinatário.
+
 O formato `.pvproj` permanece compatível com os projetos PlantView existentes. A revisão 0.0.10 ajusta cores e gráficos proxy no leitor DWG/Rust e a identificação de instâncias GPU. Os leitores STEP/IFC, a navegação e as coordenadas originais são preservados. A aba Animação é reservada e está explicitamente desabilitada: esta entrega não acrescenta um motor de animação.
 
 ## Compilar e validar no Windows
 
-Com Python, dependências instaladas e Inno Setup 6:
+Com Python 3.12, dependências de `requirements-lock.txt`, SDK .NET e Inno Setup 6:
 
 ```powershell
 .\build-windows.ps1 -UseExistingEngine
@@ -45,7 +84,7 @@ A opção acima verifica o hash do motor DWG distribuído no repositório e o pr
 O processo executa 3 testes de lógica GPU, 4 testes de fidelidade CAD, 4 testes de interface/cubo e 10 testes CAD/projeto/Refresh, empacota a aplicação, executa o smoke test do executável e gera o instalador. O instalador é copiado para a Área de Trabalho por padrão; `-CopyTo` permite outro destino.
 
 - Aplicação: `dist/NavModel Manager/NavModel Manager.exe`
-- Instalador: `release/NavModel_Manager_0.0.10_Setup_x64.exe`
+- Instalador: `release/NavModel_Manager_0.0.11_Setup_x64.exe`
 
 O instalador é um único `.exe`. A aplicação instalada contém dependências ao lado do executável, evitando extração de um pacote grande a cada inicialização. O pacote inclui as licenças de terceiros; caminhos excepcionalmente longos são encurtados e documentados no índice `licenses/license-path-index.json`.
 

@@ -142,6 +142,8 @@ class Window(W.QMainWindow):
         self.cube = NavigationCube(self, self.nav_marker)
         from .measurement import MeasurementTool
         self.measure_tool = MeasurementTool(self)
+        from .sectioning import SectioningTool
+        self.section_tool = SectioningTool(self)
         self.coord_overlay = CoordinateHUD(self.plot)
 
         # 1. Navisworks Ribbon Bar (Created after plot is ready)
@@ -149,17 +151,6 @@ class Window(W.QMainWindow):
         self.setMenuWidget(self.ribbon)
         layout.addWidget(viewport_container)
         self.setCentralWidget(central)
-
-        # Surface point picking for measurements
-        self.plot.enable_surface_point_picking(
-            callback=self.point_picked,
-            show_message=False,
-            show_point=False,
-            left_clicking=False
-        )
-
-        # Picking installs another style; restore our navigation after its setup.
-        self.plot.interactor.SetInteractorStyle(self.navigation)
 
         # Dock 1: Selection Tree (Left Dock)
         self.tree = W.QTreeWidget()
@@ -461,6 +452,7 @@ class Window(W.QMainWindow):
         index = self.models.index(previous) if previous is not None else len(self.models)
 
         record = dict(record, actors=[])
+        record['import_warnings'] = list(warnings)
         record['signature'] = (os.stat(record['path']).st_mtime_ns, os.stat(record['path']).st_size) if os.path.exists(record['path']) else None
         record['mtime'] = os.path.getmtime(record['path']) if os.path.exists(record['path']) else 0
 
@@ -484,7 +476,7 @@ class Window(W.QMainWindow):
         # GPU Instancing and buffer sharing
         actors, names, stats = add_optimized_parts(self.plot, parts, visible=record['visible'])
         record['actors'].extend(actors)
-        self.total_triangles += stats.get('total_triangles', sum(getattr(m, 'n_cells', 1) for _, m in parts))
+        record['triangle_count'] = stats.get('total_triangles', sum(getattr(m, 'n_cells', 1) for _, m in parts))
 
         # Populate hierarchy tree with checkable items
         for actor, name in zip(actors, names):
@@ -524,6 +516,9 @@ class Window(W.QMainWindow):
             self.tree.addTopLevelItem(root)
 
         self.tree.blockSignals(False)
+        self.total_triangles = sum(m.get('triangle_count', 0) for m in self.models)
+        self.measure_tool.surface_picker.invalidate()
+        self.section_tool.refresh_models()
         self.plot.remove_actor('welcome')
 
         if previous is None and record['visible'] and len(self.models) == 1:
@@ -665,12 +660,17 @@ class Window(W.QMainWindow):
         renderer = self.plot.renderer
         if not renderer:
             return
-        picker = vtk.vtkPropPicker()
-        if not picker.Pick(x, y, 0, renderer):
-            return
-        picked_actor = picker.GetActor()
-        if not picked_actor:
-            return
+        hit = self.measure_tool.surface_picker.pick_hit(x, y, snap=False)
+        if hit is None:
+            # Line and point primitives have no surface for the measurement picker.
+            picker = vtk.vtkPropPicker()
+            if not picker.Pick(x, y, 0, renderer):
+                return
+            picked_actor = picker.GetActor()
+            if picked_actor is None or not self.section_tool.contains_point(picker.GetPickPosition()):
+                return
+        else:
+            picked_actor = hit.actor
 
         matching_items = []
         for i in range(self.tree.topLevelItemCount()):
@@ -820,6 +820,13 @@ class Window(W.QMainWindow):
         if path:
             self.plot.screenshot(path)
 
+    def publish_web(self):
+        if self.worker is not None or self.queue:
+            W.QMessageBox.information(self, 'Publicar Maquete Web', 'Aguarde o carregamento dos modelos antes de publicar.')
+            return
+        from .web_publish import show_publish_dialog
+        show_publish_dialog(self)
+
     def show_layer_manager(self):
         """Opens the Appearance Profiler & Layer Manager dialog."""
         dlg = NavisLayerManagerDialog(self.layer_manager, self)
@@ -852,15 +859,12 @@ class Window(W.QMainWindow):
         self.measure_mode = not self.measure_mode
         self.measure_tool.start = None
         if not self.measure_mode:
-            self.plot.remove_actor('measure-snap')
+            self.measure_tool.deactivate()
             self.plot.interactor.unsetCursor()
         self.statusBar().showMessage('Medir: clique no primeiro ponto, mova o cursor e clique no segundo. Esc cancela.' if self.measure_mode else 'Medição desativada.')
 
     def clear_measures(self):
         self.measure_tool.clear()
-
-    def point_picked(self, point):
-        pass  # MeasurementTool owns left-click surface picking and preview.
 
     def toggle_diagnostic_render_mode(self):
         """Alterna entre Renderização Otimizada GPU (60 FPS) e Diagnóstico Isolado (1:1 peças)."""
@@ -927,6 +931,10 @@ class Window(W.QMainWindow):
         return ans == W.QMessageBox.Discard
 
     def clear_models(self):
+        self.measure_mode = False
+        self.measure_tool.deactivate()
+        self.measure_tool.clear()
+        self.section_tool.clear()
         for m in self.models:
             for actor in m['actors']:
                 self.plot.remove_actor(actor)
@@ -934,6 +942,7 @@ class Window(W.QMainWindow):
         self.selected_actor = None
         self.last_picked_actor = None
         self.models.clear()
+        self.measure_tool.surface_picker.clear()
         self.tree.clear()
         self.update_properties()
         self.total_triangles = 0
@@ -953,6 +962,9 @@ class Window(W.QMainWindow):
         if not self.confirm_discard():
             event.ignore()
             return
+        self.measure_tool.deactivate()
+        self.measure_tool.surface_picker.clear()
+        self.section_tool.close()
         self.plot.close()
         event.accept()
 
@@ -1027,6 +1039,18 @@ def main():
                 window.models[0]['item'].child(0).setSelected(True)
             window.plot.view_isometric()
             window.plot.reset_camera()
+            if len(window.models) == 3:
+                try:
+                    from .web_publish import export_scene
+                    window.section_tool.set_mode('box')
+                    assert len(window.section_tool.clipping_equations()) == 6
+                    window.section_tool.set_enabled(False)
+                    report['web'] = {}
+                    for kind in ('html', 'exe'):
+                        result = export_scene(window.models, output / f'maquete.{kind}', kind=kind)
+                        report['web'][kind] = {'bytes': result['bytes'], 'triangles': result['analysis']['triangles']}
+                except Exception as e:
+                    report['errors'].append(f'Publicação Web: {e}')
             QtCore.QTimer.singleShot(1500, finish)
 
         def finish():

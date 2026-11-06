@@ -13,6 +13,9 @@ O Open CAD Studio foi consultado para identificar essas bibliotecas e entender s
 
 ## Interface e geometria
 
+- Three.js r160 (MIT), incorporado ao visualizador Web em `resources/web/three.min.js`. O aviso de licença está em `resources/web/THREE-LICENSE.txt`.
+- O servidor do visualizador portátil inclui o runtime .NET 8. A biblioteca padrão é distribuída conforme os avisos do runtime em https://github.com/dotnet/runtime/blob/v8.0.0/THIRD-PARTY-NOTICES.TXT.
+
 - Python 3.12: PSF, https://www.python.org/
 - PySide6/Qt: LGPL-3.0/GPL/comercial conforme componente, https://doc.qt.io/qtforpython-6/
 - VTK: BSD, https://vtk.org/

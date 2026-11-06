@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--layer', default='')
     parser.add_argument('--bounds', type=float, nargs=6)
     parser.add_argument('--view', type=float, nargs=3, default=[1, 1, 1])
+    parser.add_argument('--timeout', type=float, default=300)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     app = QtWidgets.QApplication([])
@@ -52,9 +53,9 @@ def main():
         nonlocal finishing
         if finishing:
             return
-        if time.monotonic() - started > 300:
+        if time.monotonic() - started > args.timeout:
             result['loaded'] = False
-            result['error'] = 'Acceptance run exceeded five minutes'
+            result['error'] = 'Acceptance run exceeded its time limit'
         elif window.worker is not None or window.queue:
             return
         else:

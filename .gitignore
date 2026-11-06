@@ -16,3 +16,7 @@ test_out.json
 !engine/plantview-dwg.exe
 !examples/Demonstracao.pvproj
 !.gitkeep
+portable_viewer/obj/
+portable_viewer/bin/
+resources/web/NavModelWebHost.exe
+resources/web/host-build/

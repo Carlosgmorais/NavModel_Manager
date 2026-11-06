@@ -79,7 +79,9 @@ def make_instance_actor(plot, source, origins, color):
     import numpy as np
     import pyvista as pv
     from vtkmodules.vtkRenderingCore import vtkGlyph3DMapper, vtkActor
-    cloud = pv.PolyData(np.asarray(origins, dtype=float))
+    origins = np.asarray(origins, dtype=np.float64)
+    anchor = origins[0]
+    cloud = pv.PolyData(origins - anchor)
     mapper = vtkGlyph3DMapper()
     mapper.SetInputData(cloud)
     mapper.SetSourceData(source)
@@ -88,6 +90,7 @@ def make_instance_actor(plot, source, origins, color):
     mapper.SetScalarVisibility(False)
     actor = vtkActor()
     actor.SetMapper(mapper)
+    actor.SetPosition(*anchor)
     prop = actor.GetProperty()
     prop.SetColor(*color)
     prop.SetInterpolationToFlat()
@@ -123,7 +126,9 @@ def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str]
     # desativa batching e instancing GPU para renderizar cada malha 100% individualmente,
     # permitindo comparar peça por peça as malhas recebidas do Rust com os atores no VTK.
     force_isolated = (os.environ.get('PLANTVIEW_NO_BATCH') == '1' or getattr(plot, '_no_batch_mode', False))
-    if force_isolated:
+    native_batches = bool(parts) and all(
+        'plantview_native_batch' in mesh.field_data for _, mesh in parts)
+    if force_isolated or native_batches:
         actors, names = [], []
         total_triangles = 0
         for name, mesh in parts:
@@ -144,7 +149,7 @@ def add_optimized_parts(plot, parts, visible=True) -> Tuple[List[Any], List[str]
             'instance_groups': 0,
             'original_parts': len(parts),
             'total_triangles': total_triangles,
-            'mode': 'DIAGNOSTIC_ISOLATED'
+            'mode': 'DIAGNOSTIC_ISOLATED' if force_isolated else 'NATIVE_BATCH'
         }
 
     buckets = defaultdict(list)

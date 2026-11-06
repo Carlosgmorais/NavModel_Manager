@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; object-src 'none'">
+<title>Maquete Web — NavModel Manager</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:13px 'Segoe UI',sans-serif;background:#edf2f7;color:#17334b;height:100vh;overflow:hidden}header{height:64px;background:#062c50;color:white;display:flex;align-items:center;gap:15px;padding:8px 18px}header img{height:42px;width:38px;object-fit:contain}header strong{font-size:19px}header small{display:block;color:#bdd5e7}#load{margin-left:auto;max-width:50%;font-size:12px}.toolbar{height:46px;display:flex;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid #c6d3e0;background:white}button,select,input{font:inherit;color:#17334b;border:1px solid #b3c8da;border-radius:4px;padding:5px 8px;background:white}button{cursor:pointer}button:hover{background:#e0f1ff}button.active{background:#006cc7;color:white;border-color:#006cc7}.toolbar span{color:#647e94;margin-left:auto;font-size:12px}main{height:calc(100vh - 110px);display:grid;grid-template-columns:245px 1fr 280px}aside{overflow:auto;background:#f8fafc;padding:12px;border-right:1px solid #cbd9e5}aside.right{border-left:1px solid #cbd9e5;border-right:0}h2{font-size:14px;margin:5px 0 13px;color:#062c50}h3{font-size:13px;margin:17px 0 6px}.tree-row{display:flex;align-items:center;gap:5px;margin:4px 0;min-height:24px}.tree-row button{border:0;background:none;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px;flex:1}.tree-row input{margin:0}.tree-row.selected{background:#d4eaff}details{padding-left:10px}summary{cursor:pointer;padding:6px 0;overflow-wrap:anywhere}#viewport{position:relative;min-width:0;overflow:hidden;background:#293b4e}canvas{display:block;width:100%;height:100%;touch-action:none}#snap{position:absolute;width:12px;height:12px;border:2px solid #ffce42;box-shadow:0 0 0 1px #4b3510;pointer-events:none;display:none;transform:translate(-50%,-50%)}#tip{position:absolute;bottom:12px;left:12px;color:#e4edf7;background:#062c50d9;padding:7px 10px;border-radius:4px;pointer-events:none;font-size:12px;max-width:90%}#properties{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}.field{display:flex;align-items:center;gap:5px;margin:7px 0}.field input{min-width:0;width:100%}.field label{width:52px;flex:none}.boxgrid{display:grid;grid-template-columns:20px 1fr 1fr;gap:5px;align-items:center}.boxgrid input{width:100%;min-width:0;padding:5px}.muted{font-size:11px;color:#698196;line-height:1.5}.warning{background:#fff3d6;color:#6e4b0a;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere}.progress{height:3px;background:#92bdde;margin-top:6px}#bar{height:3px;background:#009bff;width:0}#measure-result{white-space:pre-wrap;font-variant-numeric:tabular-nums;line-height:1.6;font-size:12px}#error{position:absolute;top:20px;left:20px;right:20px;padding:18px;background:#fff4df;color:#722e07;display:none}#search{width:100%;margin-bottom:10px}@media(max-width:900px){main{grid-template-columns:190px 1fr}.right{display:none}.toolbar span{display:none}}@media(max-width:600px){main{grid-template-columns:1fr}aside{display:none}header strong{font-size:16px}.toolbar{gap:4px}}
+</style></head><body>
+<header><img src="@@LOGO@@" alt="NV"><div><strong>NavModel Manager</strong><small>Maquete Web • visualização offline</small></div><div id="load">Preparando maquete…<div class="progress"><div id="bar"></div></div></div></header>
+<nav class="toolbar"><button id="fit">Enquadrar</button><button id="iso">Isométrica</button><button id="top">Topo</button><button id="front">Frente</button><button id="measure">Medir</button><button id="clear">Limpar medidas</button><span>Arrastar: orbitar • direito/meio: pan • roda: zoom</span></nav>
+<main><aside><h2>Hierarquia do modelo</h2><input id="search" placeholder="Buscar componente ou camada" aria-label="Buscar componente"><div id="tree"></div><p class="muted" id="granularity"></p><div id="warnings"></div></aside>
+<div id="viewport"><canvas id="canvas"></canvas><div id="snap"></div><div id="tip">Carregamento progressivo: navegue enquanto os componentes aparecem.</div><div id="error"></div></div>
+<aside class="right"><h2>Propriedades</h2><div id="properties">Clique em um componente ou selecione na árvore.</div><h3>Cortes</h3><select id="clip-mode" aria-label="Modo de corte"><option value="saved">Cortes da publicação</option><option value="off">Desativados</option><option value="plane">Plano</option><option value="box">Box</option></select>
+<div id="plane-controls" hidden><div class="field"><label>Eixo</label><select id="clip-axis"><option>X</option><option>Y</option><option>Z</option></select><label><input id="clip-invert" type="checkbox"> Inverter</label></div><div class="field"><label>Posição</label><input id="clip-offset" type="number" step="0.01"></div><input id="clip-slider" type="range" min="0" max="1000" value="500" style="width:100%"></div>
+<div id="box-controls" hidden><p class="muted">Seis faces em coordenadas originais (m)</p><div class="boxgrid"><span></span><span>Mínimo</span><span>Máximo</span><label>X</label><input id="box-0" type="number" step="0.01"><input id="box-1" type="number" step="0.01"><label>Y</label><input id="box-2" type="number" step="0.01"><input id="box-3" type="number" step="0.01"><label>Z</label><input id="box-4" type="number" step="0.01"><input id="box-5" type="number" step="0.01"></div></div>
+<h3>Medição (m)</h3><div id="measure-result">Ative Medir e clique em dois pontos de uma face.</div><p class="muted">Distância e ΔX/ΔY/ΔZ usam as coordenadas originais. Captura em face; a precisão visual depende da escala da maquete.</p><p class="muted">Publicado com NavModel Manager. Geometria e propriedades limitadas ao conteúdo efetivamente renderizado na origem.</p></aside></main>
+<!-- Three.js
+The MIT License
+
+Copyright © 2010-2023 three.js authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+-->
+<script>@@THREE@@</script>
+<script>const MANIFEST=@@MANIFEST@@;let INLINE_CHUNKS=@@CHUNKS@@;</script>
+<script>@@VIEWER@@</script></body></html>

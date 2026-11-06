@@ -106,6 +106,7 @@ class NavisRibbonBar(W.QWidget):
         review = self.page('Revisão'); g = self.group(review,'Medição')
         g.add_large_button('Medir','measure',window.toggle_measure,'Medir entre pontos','M')
         g.add_large_button('Limpar','reset',window.clear_measures)
+        window.section_tool.add_ribbon(self)
         # Preserve honest capability boundaries: unimplemented features are visibly disabled.
         animation = self.page('Animação'); g = self.group(animation,'Animação')
         b = g.add_large_button('Animação','look',lambda:None,'Não disponível nesta versão'); b.setEnabled(False)
@@ -115,6 +116,8 @@ class NavisRibbonBar(W.QWidget):
         g.add_large_button('Atividade','properties',window.toggle_activity)
         output = self.page('Saída'); g = self.group(output,'Exportação')
         g.add_large_button('Captura','save',window.export_view,'Salvar imagem do viewport 3D')
+        self.publish_button = g.add_large_button('Publicar\nMaquete Web','save',window.publish_web,'Analisar e publicar HTML offline ou EXE portátil')
+        self.publish_button.setFixedWidth(108)
         tools = self.page('Ferramentas'); g = self.group(tools,'Ferramentas')
         g.add_large_button('Camadas','layers',window.show_layer_manager)
         g.add_large_button('Diagnóstico\nGPU','gpu',window.show_gpu_info)

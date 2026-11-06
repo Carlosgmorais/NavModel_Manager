@@ -71,6 +71,7 @@ index_file = ROOT / 'build' / 'license-path-index.json'
 index_file.parent.mkdir(exist_ok=True)
 index_file.write_text(json.dumps(license_index, indent=2), encoding='utf-8')
 a.datas = short_datas + [('licenses/license-path-index.json', str(index_file), 'DATA')]
+a.datas = [entry for entry in a.datas if not entry[0].replace('\\', '/').startswith('resources/web/host-build/')]
 
 pyz = PYZ(a.pure, [], cipher=block_cipher)
 

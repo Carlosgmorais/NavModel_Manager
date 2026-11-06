@@ -1,4 +1,4 @@
-# Build script for NavModel Manager 0.0.10 on Windows 11 x64
+# Build script for NavModel Manager 0.0.11 on Windows 11 x64
 [CmdletBinding()]
 param(
     [string]$ISCC = '',
@@ -64,7 +64,7 @@ $root = $PSScriptRoot
 Push-Location $root
 try {
     Write-Host "=========================================================="
-    Write-Host "  NAVMODEL MANAGER 0.0.10 - COMPILADOR E GERADOR DE SETUP  "
+    Write-Host "  NAVMODEL MANAGER 0.0.11 - COMPILADOR E GERADOR DE SETUP  "
     Write-Host "=========================================================="
     Write-Host "Python: $pyExe"
     Write-Host "Cargo:  $cargoExe"
@@ -133,6 +133,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de fidelidade CAD." }
     & $pyExe tests/verify.py
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integracao CAD." }
+    # The portable web host is embedded into every published EXE. The client's
+    # machine does not require Python, .NET, or NavModel Manager.
+    & dotnet publish portable_viewer/NavModelWebHost.csproj -c Release -r win-x64 --self-contained true -o build/web-host
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar o visualizador Web portatil." }
+    Copy-Item -LiteralPath 'build/web-host/NavModelWebHost.exe' -Destination 'resources/web/NavModelWebHost.exe' -Force
+    & $pyExe -m unittest tests.test_sectioning tests.test_measurement_acceleration tests.test_web_publish
+    if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de cortes, medicao ou publicacao Web." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
 
     # Step 4: PyInstaller Build
@@ -156,10 +163,22 @@ try {
         throw "O teste do executavel compilado falhou."
     } else {
         $smoke = Get-Content (Join-Path $testOutput 'smoke-test.json') -Raw | ConvertFrom-Json
-        if ($smoke.models.Count -ne 3 -or $smoke.errors.Count -ne 0 -or $smoke.splash_visible_ms -lt 5000) {
-            throw 'Smoke test incompleto: exige DWG, STEP, IFC e splash de pelo menos 5000 ms.'
+        if ($smoke.models.Count -ne 3 -or $smoke.errors.Count -ne 0 -or $smoke.splash_visible_ms -lt 5000 -or $smoke.web.html.bytes -le 0 -or $smoke.web.exe.bytes -le 0) {
+            throw 'Smoke test incompleto: exige DWG, STEP, IFC, cortes, publicacao HTML/EXE e splash.'
         }
         Write-Host "Smoke test do executavel aprovado com sucesso!"
+    }
+
+    # Keep the directly runnable application alongside the installer on Desktop.
+    # The desktop app is a folder package; published client maquettes are one EXE.
+    $desktopPath = [Environment]::GetFolderPath('Desktop')
+    if (-not $CopyTo) { $CopyTo = $desktopPath }
+    if ($CopyTo -and (Test-Path -LiteralPath $CopyTo)) {
+        $appDestination = Join-Path $CopyTo 'NavModel Manager 0.0.11'
+        New-Item -ItemType Directory -Path $appDestination -Force | Out-Null
+        Get-ChildItem -LiteralPath (Join-Path $root 'dist/NavModel Manager') -Force |
+            Copy-Item -Destination $appDestination -Recurse -Force
+        Write-Host "Aplicativo copiado para: $appDestination"
     }
 
     # Step 6: Inno Setup Compilation
@@ -193,7 +212,7 @@ try {
         & $ISCC installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o instalador com Inno Setup." }
 
-        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.10_Setup_x64.exe'
+        $installerExe = Join-Path $releaseDir 'NavModel_Manager_0.0.11_Setup_x64.exe'
         if (-not (Test-Path $installerExe)) {
             throw "Instalador nao encontrado: $installerExe"
         }

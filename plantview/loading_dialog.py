@@ -132,7 +132,6 @@ class NavisLoadingDialog(W.QDialog):
     def set_file_name(self, filename: str):
         self._current_file = Path(filename).name if filename else ''
         self.file_label.setText(f'Loading {self._current_file} ...' if self._current_file else 'Loading ...')
-        QtCore.QCoreApplication.processEvents()
 
     def set_progress(self, pct: float, message: str = ''):
         """Update percentage (0.0 to 100.0) and optional detail."""
@@ -158,7 +157,6 @@ class NavisLoadingDialog(W.QDialog):
             sub_pct = ((pct_clamped * 3.7) % 100.0)
             self.bar_sub.setValue(int(sub_pct * 100))
 
-        QtCore.QCoreApplication.processEvents()
 
     def on_cancel(self):
         self._is_cancelled = True

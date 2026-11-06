@@ -191,6 +191,7 @@ def read_dwg(
         result = root / 'geometry.json'
 
         used_cache = False
+        data = None
         if not force_reload and cache_file.is_file():
             try:
                 with open(cache_file, 'r', encoding='utf-8-sig') as f:
@@ -200,7 +201,7 @@ def read_dwg(
                 if cov.get('status') == 'empty' or (cov.get('total_solids_found', 0) > 0 and len(cached_data.get('meshes', [])) == 0):
                     cache_file.unlink(missing_ok=True)
                 else:
-                    shutil.copyfile(cache_file, result)
+                    data = cached_data
                     used_cache = True
                     if progress_callback:
                         progress_callback(40.0, f'Loading {file_name} (Cache)...')
@@ -217,14 +218,20 @@ def read_dwg(
                     cwd=folder, stdout=log, stderr=subprocess.STDOUT,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 started = time.monotonic()
+                last_activity = started
+                log_size = 0
                 try:
                     while proc.poll() is None:
-                        elapsed = time.monotonic() - started
+                        now = time.monotonic()
+                        elapsed = now - started
+                        size = os.fstat(log.fileno()).st_size
+                        if size != log_size:
+                            last_activity, log_size = now, size
                         if progress_callback:
                             if progress_callback(25.0 + min(25.0, elapsed * 2.0), f'Loading {file_name} — {int(elapsed)} s decorridos...') is False:
                                 raise InterruptedError('Carregamento cancelado pelo usuário.')
-                        if elapsed > 300:
-                            raise TimeoutError('O leitor DWG excedeu 5 minutos. A decodificação foi encerrada.')
+                        if now - last_activity > 300 or elapsed > 1800:
+                            raise TimeoutError('O leitor DWG parou de informar progresso ou excedeu 30 minutos.')
                         time.sleep(0.15)
                 finally:
                     if proc.poll() is None:
@@ -240,12 +247,13 @@ def read_dwg(
             if progress_callback:
                 progress_callback(55.0, f'Loading {file_name} ...')
 
-        try:
-            with open(result, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
-        except (ValueError, OSError):
-            cache_file.unlink(missing_ok=True)
-            raise ValueError('Geometria DWG inválida. Tente abrir novamente para reconstruir o cache.')
+        if data is None:
+            try:
+                with open(result, 'r', encoding='utf-8-sig') as f:
+                    data = json.load(f)
+            except (ValueError, OSError):
+                cache_file.unlink(missing_ok=True)
+                raise ValueError('Geometria DWG inválida. Tente abrir novamente para reconstruir o cache.')
 
         cov = data.get('coverage', {})
         # Only cache when models have valid output and are not classified as empty
@@ -280,16 +288,18 @@ def read_dwg(
     for i, m in enumerate(meshes):
         points = m.get('points')
         if points:
-            pts = np.asarray(points, dtype=np.float32)
+            pts = np.asarray(points, dtype=np.float64)
         else:
             b64 = m.get('points_b64')
             if b64:
-                pts = np.frombuffer(base64.b64decode(b64), dtype=np.float32).reshape(-1, 3).copy()
+                pts = np.frombuffer(base64.b64decode(b64), dtype='<f4').reshape(-1, 3).astype(np.float64)
+                if 'points_origin' in m:
+                    pts += np.asarray(m['points_origin'], dtype=np.float64)
             else:
                 continue
 
         if scale != 1.0:
-            pts *= np.float32(scale)
+            pts *= scale
 
         raw_faces = m.get('faces')
         if raw_faces is not None and len(raw_faces) > 0:
@@ -321,6 +331,9 @@ def read_dwg(
             proxy_converted_count += 1
 
         attach_mesh_metadata(mesh, layer_name, color_rgb)
+        # These meshes are already sized and grouped by the DWG engine.
+        if m['name'].startswith('BATCH | '):
+            mesh.field_data['plantview_native_batch'] = np.array([1], dtype=np.uint8)
         parts.append((m['name'], mesh))
 
         if progress_callback and (i % max(1, total_meshes // 10) == 0 or i == total_meshes - 1):
@@ -378,7 +391,8 @@ def read_dwg(
         "============================================================"
     ]
     if cov.get('status') == 'partial':
-        warnings.append(f"AVISO CRÍTICO: Cobertura parcial ({cov.get('failed_solids', 0)} sólido(s) não puderam ser reconstruídos).")
+        warnings.append(f"AVISO CRÍTICO: Cobertura parcial. {cov.get('failed_solids', 0)} sólido(s) sem geometria e "
+                        f"{cov.get('partial_solids', 0)} sólido(s) com faces incompletas.")
 
     for line in reversed(diag_report):
         warnings.insert(0, line)

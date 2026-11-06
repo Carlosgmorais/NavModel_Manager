@@ -1,7 +1,7 @@
 {
+  "built_at": "2026-11-06 17:17:46",
   "name": "plantview-dwg",
-  "built_at": "2026-11-03 02:29:25",
-  "size_bytes": 21899847,
-  "sha256": "01C5CCC55ACF533E1B94EC31120CD37CB3FB7082A1D5F4718FFA07B395117742",
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "sha256": "F6946259921F70EA9B86E86E49EAB7F979D3F5D25E21238C43BA72255F54FF0D",
+  "size_bytes": 21848576
 }

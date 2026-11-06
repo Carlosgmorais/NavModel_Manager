@@ -1,13 +1,13 @@
 VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(0,0,10,0), prodvers=(0,0,10,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+  ffi=FixedFileInfo(filevers=(0,0,11,0), prodvers=(0,0,11,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
   kids=[StringFileInfo([StringTable('041604b0', [
     StringStruct('CompanyName','Carlos Morais'),
     StringStruct('FileDescription','NavModel Manager — Visualização e gerenciamento de maquetes 3D'),
-    StringStruct('FileVersion','0.0.10.0'),
+    StringStruct('FileVersion','0.0.11.0'),
     StringStruct('InternalName','NavModelManager'),
     StringStruct('LegalCopyright','Copyright © 2026 Carlos Morais'),
     StringStruct('OriginalFilename','NavModel Manager.exe'),
     StringStruct('ProductName','NavModel Manager'),
-    StringStruct('ProductVersion','0.0.10.0')
+    StringStruct('ProductVersion','0.0.11.0')
   ])]), VarFileInfo([VarStruct('Translation',[1046,1200])])]
 )

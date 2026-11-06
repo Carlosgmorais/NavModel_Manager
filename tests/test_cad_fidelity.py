@@ -1,14 +1,38 @@
 import unittest
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
 import pyvista as pv
+from scipy.spatial import cKDTree
 from plantview.gpu import geometry_fingerprint,add_optimized_parts
-from plantview.readers import read_dwg
+from plantview.readers import engine_path, read_dwg
+
+
+class GeoreferencedDwgRegression(unittest.TestCase):
+    def test_same_cad_geometry_near_origin_and_at_survey_coordinates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            near = Path(folder) / 'near.dwg'
+            far = Path(folder) / 'far.dwg'
+            engine = str(engine_path())
+            subprocess.run([engine, '--fixture', str(near)], check=True)
+            subprocess.run([engine, '--fixture-georef', str(far)], check=True)
+            with patch.dict(os.environ, {'LOCALAPPDATA': folder}):
+                near_parts, _ = read_dwg(near)
+                far_parts, _ = read_dwg(far)
+        self.assertEqual(len(near_parts), len(far_parts))
+        shift = np.array([194_000., 8_745_000., -900.])
+        for (_, near_mesh), (_, far_mesh) in zip(near_parts, far_parts):
+            self.assertEqual(near_mesh.n_cells, far_mesh.n_cells)
+            points = far_mesh.points - shift
+            # Equivalent CAD faces can choose a different triangle ordering.
+            for a, b in ((near_mesh.points, points), (points, near_mesh.points)):
+                self.assertLess(float(cKDTree(a).query(b)[0].max()), 2e-6)
+            self.assertAlmostEqual(near_mesh.area, far_mesh.area, places=5)
 
 class CadAppearanceRegression(unittest.TestCase):
  def test_saved_white_and_gray_are_preserved_on_equipment_layers(self):

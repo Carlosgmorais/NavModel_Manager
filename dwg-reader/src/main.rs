@@ -24,6 +24,8 @@ struct Mesh {
     #[serde(skip_serializing_if = "Option::is_none")]
     points_b64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    points_origin: Option<[f64; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     faces_b64: Option<String>,
 }
 
@@ -53,6 +55,17 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     out
+}
+
+fn encode_local_points(points: &[[f64; 3]]) -> ([f64; 3], Vec<u8>) {
+    let origin = points[0];
+    let mut bytes = Vec::with_capacity(points.len() * 12);
+    for point in points {
+        for axis in 0..3 {
+            bytes.extend_from_slice(&((point[axis] - origin[axis]) as f32).to_le_bytes());
+        }
+    }
+    (origin, bytes)
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -200,7 +213,7 @@ fn tessellate_local(
             color: first_color,
         }];
     }
-    let tess = mesh::tessellate(body, tol);
+    let tess = mesh::tessellate_for_render(body, tol, true);
     let mut groups: Vec<LocalMesh> = Vec::new();
     for (triangle, face_key) in tess.mesh.triangles.iter().zip(&tess.triangle_faces) {
         let color = body
@@ -2190,13 +2203,13 @@ fn walk(
         .or_default() += 1;
 }
 
-fn fixture(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn fixture(path: &str, offset: [f64; 3]) -> Result<(), Box<dyn std::error::Error>> {
     use acadrust::entities::acis::primitives;
     let mut doc = CadDocument::new();
     doc.header.insertion_units = 4;
     let mut s = Solid3D::new();
     s.set_sat_document(&primitives::build_box(
-        [10000., 20000., 3000.],
+        [10000. + offset[0], 20000. + offset[1], 3000. + offset[2]],
         1000.,
         2000.,
         3000.,
@@ -2204,7 +2217,7 @@ fn fixture(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     doc.add_entity(EntityType::Solid3D(s))?;
     let mut s = Solid3D::new();
     s.set_sat_document(&primitives::build_cylinder(
-        [13000., 20000., 0.],
+        [13000. + offset[0], 20000. + offset[1], offset[2]],
         500.,
         2000.,
     ));
@@ -2277,6 +2290,8 @@ fn prewarm_acis_cache_parallel(
     if acis_jobs.len() < 8 {
         return;
     }
+    // Start the largest jobs first so expensive solids overlap in the workers.
+    acis_jobs.sort_by_key(|(_, data, _)| std::cmp::Reverse(data.size()));
 
     let n_threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -2298,6 +2313,9 @@ fn prewarm_acis_cache_parallel(
                         break;
                     }
                     let (h, acis_data, solid_wires) = jobs_ref[idx];
+                    if idx % 32 == 0 {
+                        eprintln!("[plantview-dwg progress] {idx}/{} sólidos encaminhados", jobs_ref.len());
+                    }
                     let Some(sat) = acis_data.parse() else {
                         out_chunk.push((h, None));
                         continue;
@@ -2397,7 +2415,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Uso: plantview-dwg entrada.dwg geometria.json | --fixture exemplo.dwg".into());
     }
     if args[1] == "--fixture" {
-        return fixture(&args[2]);
+        return fixture(&args[2], [0.; 3]);
+    }
+    if args[1] == "--fixture-georef" {
+        return fixture(&args[2], [194_000_000., 8_745_000_000., -900_000.]);
     }
     let t0 = std::time::Instant::now();
     eprintln!("[plantview-dwg] Abrindo arquivo DWG: {}", args[1]);
@@ -2419,7 +2440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             outcome.document
         }
     };
-    if let Some(raw) = doc.raw_acds_data.clone() {
+    if let Some(raw) = doc.raw_acds_data.take() {
         if let Some(records) = acds::active_blobs(raw.as_slice()) {
             let mut corrected = 0;
             for (handle, blob) in records {
@@ -2570,13 +2591,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     for m in &mut out.meshes {
         if m.points.len() > 50 {
-            let mut p_bytes = Vec::with_capacity(m.points.len() * 12);
-            for p in &m.points {
-                p_bytes.extend_from_slice(&(p[0] as f32).to_le_bytes());
-                p_bytes.extend_from_slice(&(p[1] as f32).to_le_bytes());
-                p_bytes.extend_from_slice(&(p[2] as f32).to_le_bytes());
-            }
+            let (origin, p_bytes) = encode_local_points(&m.points);
             m.points_b64 = Some(base64_encode(&p_bytes));
+            m.points_origin = Some(origin);
             m.points.clear();
 
             let mut f_bytes = Vec::with_capacity(m.faces.len() * 4);
