@@ -962,13 +962,7 @@ pub fn tessellate_for_render(
     for face_key in body.face_keys() {
         let max_angle = face_chordal_angle(body, face_key, tolerance.angle, tolerance.chordal);
         match scheduled_face(body, face_key, max_angle, tolerance.linear, &schedules)
-            .or_else(|| {
-                if tolerance.linear <= 2.5 {
-                    finer_face(body, face_key, max_angle, tolerance.linear)
-                } else {
-                    None
-                }
-            })
+            .or_else(|| finer_face(body, face_key, max_angle, tolerance.linear))
         {
             Some(mesh) => {
                 if track_faces {
@@ -993,13 +987,7 @@ pub fn tessellate(body: &Body, tolerance: TessellationTolerance) -> BodyMesh {
     for face_key in body.face_keys() {
         let max_angle = face_chordal_angle(body, face_key, tolerance.angle, tolerance.chordal);
         match scheduled_face(body, face_key, max_angle, tolerance.linear, &schedules)
-            .or_else(|| {
-                if tolerance.linear <= 2.5 {
-                    finer_face(body, face_key, max_angle, tolerance.linear)
-                } else {
-                    None
-                }
-            })
+            .or_else(|| finer_face(body, face_key, max_angle, tolerance.linear))
         {
             Some(mesh) => {
                 if let Some(cone) = analytic_cone_face(body, face_key, &mesh) {
@@ -1701,7 +1689,7 @@ fn shared_edge_samples(
         parameter: edge.start_parameter,
         position: body.vertices.get(edge.start)?.point,
     }];
-    let mut budget = if tolerance > 2.5 { 256 } else { PCURVE_REFINE_BUDGET };
+    let mut budget = PCURVE_REFINE_BUDGET;
     if refine_edge(
         body,
         edge_key,
@@ -1761,7 +1749,7 @@ fn edge_samples_from_pcurves(
         // however small, and halving it down to MAX_DEPTH is billions of
         // evaluations. Past the budget the pcurve is given up on and the
         // edge's own curve is sampled instead.
-        let mut budget = if tolerance > 2.5 { 256 } else { PCURVE_REFINE_BUDGET };
+        let mut budget = PCURVE_REFINE_BUDGET;
         let resolved = breaks.windows(2).all(|pair| {
             refine_pcurve_edge(
                 body,

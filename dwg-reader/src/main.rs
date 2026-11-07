@@ -254,6 +254,9 @@ fn rgb(doc: &CadDocument, color: Color, layer: &str, parent: [u8; 3]) -> [u8; 3]
         Color::ByLayer => doc
             .layers
             .get(layer)
+            .or_else(|| {
+                doc.layers.iter().find(|l| l.name.eq_ignore_ascii_case(layer))
+            })
             .map(|l| l.color)
             .unwrap_or(Color::Index(7)),
         other => other,
@@ -2334,39 +2337,18 @@ fn prewarm_acis_cache_parallel(
                             loss.broken.len()
                         );
                     }
-                    // Adaptive tolerance for massive industrial plant models:
-                    let is_massive = jobs_ref.len() > 2000 || acis_data.size() > 50_000;
-                    let is_large = jobs_ref.len() > 500 || acis_data.size() > 20_000;
-                    let is_colossal = acis_data.size() > 100_000;
-                    let tol = if is_colossal {
-                        mesh::TessellationTolerance::new(0.95, 50.0)
-                    } else if is_massive {
-                        mesh::TessellationTolerance::new(0.80, 25.0)
-                    } else if is_large {
-                        mesh::TessellationTolerance::new(0.65, 10.0)
+                    let tol = if acis_data.size() > 50_000 {
+                        mesh::TessellationTolerance::new(0.55, 0.5)
                     } else if acis_data.size() > 10_000 {
-                        mesh::TessellationTolerance::new(0.55, 3.0)
+                        mesh::TessellationTolerance::new(0.45, 0.5)
                     } else {
-                        mesh::TessellationTolerance::new(0.40, 1.0)
+                        mesh::TessellationTolerance::new(0.35, 0.5)
                     };
                     let mut local_meshes = Vec::new();
                     let mut all_local_pts: Vec<[f64; 3]> = Vec::new();
-                    let mut skip_heavy = false;
                     for body in bodies.iter() {
-                        // If a single B-Rep body has more than 600 faces in a heavy model,
-                        // skip expensive B-Rep triangulation and let Priority 2 (GraphicData Proxy)
-                        // or Wireframe render it instantly.
-                        if is_massive && body.faces.len() > 600 {
-                            skip_heavy = true;
-                            break;
-                        }
-                        let body_tol = if is_massive && body.faces.len() > 120 {
-                            mesh::TessellationTolerance::new(0.95, 50.0)
-                        } else {
-                            tol
-                        };
                         let locals = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            tessellate_local(body, &sat, body_tol)
+                            tessellate_local(body, &sat, tol)
                         })).unwrap_or_default();
                         for local in locals {
                             if local.missing_faces > 0 {
@@ -2381,10 +2363,6 @@ fn prewarm_acis_cache_parallel(
                                 .extend(local.local_points.iter().map(|p| [p.x, p.y, p.z]));
                             local_meshes.push(local);
                         }
-                    }
-                    if skip_heavy {
-                        out_chunk.push((h, None));
-                        continue;
                     }
                     let mut bounds_mismatch = false;
                     if let (Some(wires), Some(ab)) = (solid_wires, compute_bounds(&all_local_pts)) {
