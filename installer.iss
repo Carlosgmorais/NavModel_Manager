@@ -1,6 +1,6 @@
-; Inno Setup Script for NavModel Manager 0.0.12 Windows x64
+; Inno Setup Script for NavModel Manager 0.0.13 Windows x64
 #define MyAppName "NavModel Manager"
-#define MyAppVersion "0.0.12"
+#define MyAppVersion "0.0.13"
 #define MyAppPublisher "Carlos Morais"
 #define MyAppURL "https://github.com/Carlosgmorais/NavModel_Manager"
 #define MyAppExeName "NavModel Manager.exe"
@@ -17,7 +17,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=release
-OutputBaseFilename=NavModel_Manager_0.0.12_Setup_x64
+OutputBaseFilename=NavModel_Manager_0.0.13_Setup_x64
 SetupIconFile=resources\navmodel.ico
 WizardImageFile=resources\installer_wizard.bmp
 WizardSmallImageFile=resources\installer_banner.bmp

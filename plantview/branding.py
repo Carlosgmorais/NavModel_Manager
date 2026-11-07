@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets as W
 
-VERSION = '0.0.12'
+VERSION = '0.0.13'
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
 
 def resource(name):
