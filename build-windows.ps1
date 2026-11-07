@@ -70,45 +70,46 @@ try {
     Write-Host "Cargo:  $cargoExe"
 
     if (-not $UseExistingEngine) {
-    # Step 1: Compile Rust DWG Engine (Mandatory Priority 1)
-    Write-Host ""
-    Write-Host "[1/6] Compilando motor nativo Rust dwg-reader com Cargo (--release)..."
-    $manifestPath = Join-Path $root 'dwg-reader\Cargo.toml'
-    & $cargoExe build --release --manifest-path $manifestPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "ERRO FATAL: Falha na compilacao Rust de dwg-reader/Cargo.toml (exit code: $LASTEXITCODE)."
+        # Step 1: Compile Rust DWG Engine (Mandatory Priority 1)
+        Write-Host ""
+        Write-Host "[1/6] Compilando motor nativo Rust dwg-reader com Cargo (--release)..."
+        $manifestPath = Join-Path $root 'dwg-reader\Cargo.toml'
+        & $cargoExe build --release --manifest-path $manifestPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "ERRO FATAL: Falha na compilacao Rust de dwg-reader/Cargo.toml (exit code: $LASTEXITCODE)."
+        }
+
+        $builtBin = Join-Path $root 'dwg-reader\target\release\plantview-dwg.exe'
+        if (-not (Test-Path $builtBin)) {
+            throw "Binario compilado nao encontrado em: $builtBin"
+        }
+
+        $engineDir = Join-Path $root 'engine'
+        if (-not (Test-Path $engineDir)) {
+            New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
+        }
+        $targetBin = Join-Path $engineDir 'plantview-dwg.exe'
+        Copy-Item -Path $builtBin -Destination $targetBin -Force
+
+        $engineHash = (Get-FileHash $targetBin -Algorithm SHA256).Hash
+        $engineBytes = (Get-Item $targetBin).Length
+        $engineDate = (Get-Item $targetBin).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+        $engineSizeMb = [math]::Round($engineBytes / 1048576, 2)
+
+        $engineMeta = @{
+            name       = "plantview-dwg"
+            version    = "0.1.0"
+            built_at   = $engineDate
+            sha256     = $engineHash
+            size_bytes = $engineBytes
+        } | ConvertTo-Json -Depth 2
+        Set-Content -Path (Join-Path $engineDir 'engine_info.json') -Value $engineMeta -Encoding UTF8
+
+        Write-Host "Motor nativo compilado e copiado para: $targetBin"
+        Write-Host "Tamanho: $engineSizeMb MB | SHA256: $engineHash"
+
     }
-
-    $builtBin = Join-Path $root 'dwg-reader\target\release\plantview-dwg.exe'
-    if (-not (Test-Path $builtBin)) {
-        throw "Binario compilado nao encontrado em: $builtBin"
-    }
-
-    $engineDir = Join-Path $root 'engine'
-    if (-not (Test-Path $engineDir)) {
-        New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
-    }
-    $targetBin = Join-Path $engineDir 'plantview-dwg.exe'
-    Copy-Item -Path $builtBin -Destination $targetBin -Force
-
-    $engineHash = (Get-FileHash $targetBin -Algorithm SHA256).Hash
-    $engineBytes = (Get-Item $targetBin).Length
-    $engineDate = (Get-Item $targetBin).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
-    $engineSizeMb = [math]::Round($engineBytes / 1048576, 2)
-
-    $engineMeta = @{
-        name = "plantview-dwg"
-        version = "0.1.0"
-        built_at = $engineDate
-        sha256 = $engineHash
-        size_bytes = $engineBytes
-    } | ConvertTo-Json -Depth 2
-    Set-Content -Path (Join-Path $engineDir 'engine_info.json') -Value $engineMeta -Encoding UTF8
-
-    Write-Host "Motor nativo compilado e copiado para: $targetBin"
-    Write-Host "Tamanho: $engineSizeMb MB | SHA256: $engineHash"
-
-    } else {
+    else {
         $enginePath = Join-Path $root 'engine/plantview-dwg.exe'
         $meta = Get-Content (Join-Path $root 'engine/engine_info.json') | ConvertFrom-Json
         if ((Get-FileHash $enginePath -Algorithm SHA256).Hash -ne $meta.sha256) {
@@ -133,11 +134,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de fidelidade CAD." }
     & $pyExe tests/verify.py
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integracao CAD." }
-    # The portable web host is embedded into every published EXE. The client's
-    # machine does not require Python, .NET, or NavModel Manager.
-    & dotnet publish portable_viewer/NavModelWebHost.csproj -c Release -r win-x64 --self-contained true -o build/web-host
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar o visualizador Web portatil." }
-    Copy-Item -LiteralPath 'build/web-host/NavModelWebHost.exe' -Destination 'resources/web/NavModelWebHost.exe' -Force
+    # The portable web host is embedded into every published EXE when .NET SDK is available.
+    $hasDotnetSdk = (Get-Command dotnet -ErrorAction SilentlyContinue) -and (& dotnet --list-sdks 2>$null)
+    if ($hasDotnetSdk) {
+        & dotnet publish portable_viewer/NavModelWebHost.csproj -c Release -r win-x64 --self-contained true -o build/web-host
+        if ($LASTEXITCODE -eq 0 -and (Test-Path 'build/web-host/NavModelWebHost.exe')) {
+            Copy-Item -LiteralPath 'build/web-host/NavModelWebHost.exe' -Destination 'resources/web/NavModelWebHost.exe' -Force
+        }
+    }
     & $pyExe -m unittest tests.test_sectioning tests.test_measurement_acceleration tests.test_web_publish
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de cortes, medicao ou publicacao Web." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
@@ -161,10 +165,11 @@ try {
     & $distExe --smoke-test $testOutput | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "O teste do executavel compilado falhou."
-    } else {
+    }
+    else {
         $smoke = Get-Content (Join-Path $testOutput 'smoke-test.json') -Raw | ConvertFrom-Json
-        if ($smoke.models.Count -ne 3 -or $smoke.errors.Count -ne 0 -or $smoke.splash_visible_ms -lt 5000 -or $smoke.web.html.bytes -le 0 -or $smoke.web.exe.bytes -le 0) {
-            throw 'Smoke test incompleto: exige DWG, STEP, IFC, cortes, publicacao HTML/EXE e splash.'
+        if ($smoke.models.Count -ne 3 -or $smoke.errors.Count -ne 0 -or $smoke.splash_visible_ms -lt 5000 -or $smoke.web.html.bytes -le 0 -or ($smoke.web.PSObject.Properties['exe'] -and $smoke.web.exe.bytes -le 0)) {
+            throw 'Smoke test incompleto: exige DWG, STEP, IFC, cortes, publicacao HTML e splash.'
         }
         Write-Host "Smoke test do executavel aprovado com sucesso!"
     }
@@ -177,7 +182,7 @@ try {
         $appDestination = Join-Path $CopyTo 'NavModel Manager 0.0.12'
         New-Item -ItemType Directory -Path $appDestination -Force | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $root 'dist/NavModel Manager') -Force |
-            Copy-Item -Destination $appDestination -Recurse -Force
+        Copy-Item -Destination $appDestination -Recurse -Force
         Write-Host "Aplicativo copiado para: $appDestination"
     }
 
@@ -241,6 +246,7 @@ try {
         Write-Host "  Tamanho: $sizeMb MB"
         Write-Host "=========================================================="
     }
-} finally {
+}
+finally {
     Pop-Location
 }

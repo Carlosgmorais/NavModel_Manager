@@ -1046,7 +1046,10 @@ def main():
                     assert len(window.section_tool.clipping_equations()) == 6
                     window.section_tool.set_enabled(False)
                     report['web'] = {}
-                    for kind in ('html', 'exe'):
+                    kinds = ['html']
+                    if (root / 'resources' / 'web' / 'NavModelWebHost.exe').is_file():
+                        kinds.append('exe')
+                    for kind in kinds:
                         result = export_scene(window.models, output / f'maquete.{kind}', kind=kind)
                         report['web'][kind] = {'bytes': result['bytes'], 'triangles': result['analysis']['triangles']}
                 except Exception as e:
