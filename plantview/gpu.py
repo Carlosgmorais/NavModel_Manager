@@ -79,9 +79,7 @@ def make_instance_actor(plot, source, origins, color):
     import numpy as np
     import pyvista as pv
     from vtkmodules.vtkRenderingCore import vtkGlyph3DMapper, vtkActor
-    origins = np.asarray(origins, dtype=np.float64)
-    anchor = origins[0]
-    cloud = pv.PolyData(origins - anchor)
+    cloud = pv.PolyData(np.asarray(origins, dtype=float))
     mapper = vtkGlyph3DMapper()
     mapper.SetInputData(cloud)
     mapper.SetSourceData(source)
@@ -90,7 +88,6 @@ def make_instance_actor(plot, source, origins, color):
     mapper.SetScalarVisibility(False)
     actor = vtkActor()
     actor.SetMapper(mapper)
-    actor.SetPosition(*anchor)
     prop = actor.GetProperty()
     prop.SetColor(*color)
     prop.SetInterpolationToFlat()

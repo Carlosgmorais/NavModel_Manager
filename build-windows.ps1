@@ -174,17 +174,9 @@ try {
         Write-Host "Smoke test do executavel aprovado com sucesso!"
     }
 
-    # Keep the directly runnable application alongside the installer on Desktop.
-    # The desktop app is a folder package; published client maquettes are one EXE.
+    # Only generate and copy the standalone installer EXE to Desktop (no extra folders)
     $desktopPath = [Environment]::GetFolderPath('Desktop')
-    if (-not $CopyTo) { $CopyTo = $desktopPath }
-    if ($CopyTo -and (Test-Path -LiteralPath $CopyTo)) {
-        $appDestination = Join-Path $CopyTo 'NavModel Manager 0.0.12'
-        New-Item -ItemType Directory -Path $appDestination -Force | Out-Null
-        Get-ChildItem -LiteralPath (Join-Path $root 'dist/NavModel Manager') -Force |
-        Copy-Item -Destination $appDestination -Recurse -Force
-        Write-Host "Aplicativo copiado para: $appDestination"
-    }
+    if (-not $CopyTo -and (Test-Path $desktopPath)) { $CopyTo = $desktopPath }
 
     # Step 6: Inno Setup Compilation
     if (-not $SkipInstaller) {

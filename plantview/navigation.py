@@ -178,7 +178,7 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         if self._prop_picker.Pick(int(px), int(py), 0, renderer) and self._prop_picker.GetActor() is not None:
             pt = np.array(self._prop_picker.GetPickPosition(), dtype=float)
             depth = float(np.dot(pt - eye, view_dir))
-            if depth > 1e-3:
+            if 0.01 < depth < 2000.0:
                 self.last_valid_target = pt.copy()
                 return pt, depth
         return None
@@ -520,34 +520,29 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
                     self._zoom_target_pt = hit[0].copy() if hit is not None else None
                 self._zoom_pick_time = now
 
-            if hit is not None:
+            if hit is not None and direction > 0:
                 pt, depth = hit
-                if direction > 0:
-                    to_pt = pt - eye
-                    to_pt_len = max(float(np.linalg.norm(to_pt)), 1e-6)
-                    step = max(depth * zoom_frac, 0.015)
-                    if step < to_pt_len * 0.88:
-                        movement = (to_pt / to_pt_len) * step
-                    else:
-                        movement = view_dir * step
-                    new_eye = eye + movement
-                    new_dist = max(depth - step, 0.03)
-                    new_focal = new_eye + view_dir * new_dist
+                to_pt = pt - eye
+                to_pt_len = max(float(np.linalg.norm(to_pt)), 1e-6)
+                # Cap depth to current focal distance to prevent jumping into distant background
+                eff_depth = min(depth, dist * 2.0)
+                step = min(max(eff_depth * zoom_frac, 0.015), dist * 0.35)
+                if step < to_pt_len * 0.88 and depth <= dist * 2.5:
+                    movement = (to_pt / to_pt_len) * step
                 else:
-                    ref_dist = max(depth, 0.12)
-                    step = max(ref_dist * zoom_frac, 0.025)
-                    new_eye = eye - view_dir * step
-                    new_dist = max(ref_dist + step, 0.12)
-                    new_focal = new_eye + view_dir * new_dist
+                    movement = view_dir * step
+                new_eye = eye + movement
+                new_dist = max(dist - step, 0.05)
+                new_focal = new_eye + view_dir * new_dist
             else:
-                _, ref_depth = self._scene_reference_target(renderer, eye, view_dir, focal)
-                eff_dist = max(dist, min(ref_depth, 250.0), 0.25)
-                step = max(eff_dist * zoom_frac, 0.03)
-                new_eye = eye + view_dir * (step * direction)
+                # Smooth, rock-solid zoom along view direction for zoom-out or when no close target is picked
+                step = min(max(dist * zoom_frac, 0.025), dist * 0.40)
                 if direction > 0:
-                    new_dist = max(eff_dist - step, 0.05)
+                    new_eye = eye + view_dir * step
+                    new_dist = max(dist - step, 0.05)
                 else:
-                    new_dist = max(eff_dist + step, 0.15)
+                    new_eye = eye - view_dir * step
+                    new_dist = dist + step
                 new_focal = new_eye + view_dir * new_dist
 
             camera.SetPosition(*new_eye)

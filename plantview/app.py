@@ -181,6 +181,7 @@ class Window(W.QMainWindow):
         self.properties.setHeaderHidden(True)
         self.properties.setColumnWidth(0, 105)
         self.properties.setAlternatingRowColors(True)
+        self.properties.itemDoubleClicked.connect(self.on_property_double_clicked)
         self.properties_dock = W.QDockWidget('Propriedades', self)
         self.properties_dock.setWidget(self.properties)
         self.properties_dock.setMinimumWidth(260)
@@ -746,19 +747,59 @@ class Window(W.QMainWindow):
             return
         self.properties.clear()
         actor = self.selected_actor
+
+        selected_model = None
+        selected_items = self.tree.selectedItems() if hasattr(self, 'tree') else []
+        if selected_items:
+            selected_model = next((m for m in self.models if m.get('item') is selected_items[0]), None)
+        if not selected_model and actor is not None:
+            selected_model = next((m for m in self.models if actor in m['actors']), None)
+
         general = W.QTreeWidgetItem(self.properties, ['Geral'])
-        if actor is None:
+        if actor is None and selected_model is None:
             W.QTreeWidgetItem(general, ['Seleção', 'Nenhum elemento'])
         else:
-            model = next((m for m in self.models if actor in m['actors']), None)
-            fields = [('Nome', getattr(actor, '_plantview_name', 'Componente')),
-                      ('Camada', getattr(actor, '_plantview_layer', '0')),
-                      ('Arquivo', Path(model['path']).name if model else ''),
-                      ('Unidades', 'm'), ('Visível', 'Sim' if actor.GetVisibility() else 'Não')]
+            model = selected_model or (next((m for m in self.models if actor in m['actors']), None) if actor else None)
+            model_path = str(model['path']) if model and 'path' in model else ''
+            file_name = Path(model_path).name if model_path else ''
+
+            elem_name = getattr(actor, '_plantview_name', None) if actor else None
+            if not elem_name and model:
+                elem_name = model.get('name', file_name)
+            elem_name = elem_name or 'Componente'
+
+            layer_name = getattr(actor, '_plantview_layer', None) if actor else None
+            if not layer_name:
+                layer_name = '0'
+
+            vis_val = 'Sim' if (actor.GetVisibility() if actor else (selected_model.get('visible', True) if selected_model else True)) else 'Não'
+
+            fields = [
+                ('Nome', elem_name),
+                ('Camada', layer_name),
+                ('Arquivo', file_name),
+            ]
             for key, value in fields:
                 W.QTreeWidgetItem(general, [key, str(value)])
-            bounds = getattr(actor, '_plantview_bounds', None)
-            if bounds is None:
+
+            if model_path:
+                path_item = W.QTreeWidgetItem(general, ['Caminho', model_path])
+                path_item.setToolTip(0, 'Clique no link ou dê duplo-clique para abrir o modelo original')
+                path_item.setToolTip(1, f'Clique duas vezes para abrir o arquivo:\n{model_path}')
+                path_item.setData(1, QtCore.Qt.UserRole, model_path)
+                # Clickable link widget in column 1
+                link_lbl = W.QLabel(f'<a href="{model_path}" style="color:#0066cc; text-decoration:underline; font-weight:bold;">{file_name} (Abrir)</a>')
+                link_lbl.setToolTip(f'Clique para abrir o modelo original diretamente:\n{model_path}')
+                link_lbl.setTextFormat(QtCore.Qt.RichText)
+                link_lbl.setOpenExternalLinks(False)
+                link_lbl.linkActivated.connect(lambda link=model_path: self.open_model_file(link))
+                self.properties.setItemWidget(path_item, 1, link_lbl)
+
+            W.QTreeWidgetItem(general, ['Unidades', 'm'])
+            W.QTreeWidgetItem(general, ['Visível', vis_val])
+
+            bounds = getattr(actor, '_plantview_bounds', None) if actor else None
+            if bounds is None and actor:
                 bounds = actor.GetBounds()
             if bounds:
                 pos = W.QTreeWidgetItem(self.properties, ['Posição (global)'])
@@ -766,8 +807,9 @@ class Window(W.QMainWindow):
                 for i, axis in enumerate('XYZ'):
                     W.QTreeWidgetItem(pos, [axis, f'{(bounds[2*i]+bounds[2*i+1])/2:.4f} m'])
                     W.QTreeWidgetItem(dim, [axis, f'{bounds[2*i+1]-bounds[2*i]:.4f} m'])
-            material = W.QTreeWidgetItem(self.properties, ['Material'])
-            W.QTreeWidgetItem(material, ['Cor RGB', str(tuple(round(c*255) for c in actor.GetProperty().GetColor()))])
+            if actor:
+                material = W.QTreeWidgetItem(self.properties, ['Material'])
+                W.QTreeWidgetItem(material, ['Cor RGB', str(tuple(round(c*255) for c in actor.GetProperty().GetColor()))])
         for i in range(self.properties.topLevelItemCount()):
             section = self.properties.topLevelItem(i)
             section.setFirstColumnSpanned(True)
@@ -775,6 +817,34 @@ class Window(W.QMainWindow):
             section.setBackground(1, QtGui.QColor('#d7dfeb'))
             font = section.font(0); font.setBold(True); section.setFont(0,font)
         general.setExpanded(True)
+
+    def on_property_double_clicked(self, item, column):
+        """Opens model file if user double-clicks the file path or name property."""
+        val = item.data(1, QtCore.Qt.UserRole)
+        if val and isinstance(val, str) and Path(val).exists():
+            self.open_model_file(val)
+        elif item.text(0) in ('Arquivo', 'Caminho'):
+            txt = item.text(1)
+            if txt and Path(txt).exists():
+                self.open_model_file(txt)
+
+    def open_model_file(self, file_path: str):
+        """Opens the model file directly with Windows default application or reveals in explorer."""
+        if not file_path:
+            return
+        p = Path(file_path)
+        if not p.exists():
+            self.statusBar().showMessage(f'Arquivo não encontrado: {file_path}', 5000)
+            return
+        try:
+            os.startfile(str(p))
+            self.statusBar().showMessage(f'Abrindo modelo: {p.name}', 5000)
+        except Exception as e:
+            try:
+                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(p)))
+                self.statusBar().showMessage(f'Abrindo modelo: {p.name}', 5000)
+            except Exception as e2:
+                self.statusBar().showMessage(f'Erro ao abrir arquivo: {e2}', 5000)
 
     def show_properties(self):
         self.update_properties()
