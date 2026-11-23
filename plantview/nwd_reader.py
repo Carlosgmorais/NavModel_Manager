@@ -325,6 +325,14 @@ def read_nwd(
                                 found_elements.append(((x, y, z), b))
 
             if found_elements:
+                # Filter out unplaced family prototypes at origin if real placed coordinates exist
+                placed_elements = [
+                    e for e in found_elements
+                    if abs(e[0][0]) > 1.0 and abs(e[0][1]) > 1.0 and abs(e[0][2]) > 1.0
+                ]
+                if len(placed_elements) >= 5:
+                    found_elements = placed_elements
+
                 categorized: Dict[str, List[Tuple[float, float, float, float, float, float]]] = {
                     "Paredes / Walls": [],
                     "Pisos / Floors": [],
@@ -336,20 +344,26 @@ def read_nwd(
 
                 for (x, y, z), b in found_elements:
                     dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
-                    x0, y0, z0 = x + b[0], y + b[1], z + b[2]
-                    x1, y1, z1 = x + b[3], y + b[4], z + b[5]
+                    # Map Navisworks Y-up coordinates to VTK Z-up (Elevation)
+                    x0, x1 = x + b[0], x + b[3]
+                    y0, y1 = z + b[2], z + b[5]
+                    z0, z1 = y + b[1], y + b[4]
                     box = (x0, y0, z0, x1, y1, z1)
 
-                    if dz > 2.0 and dx < 1.2 and dy < 1.2:
+                    dx_w = x1 - x0
+                    dy_w = y1 - y0
+                    dz_w = z1 - z0
+
+                    if dz_w > 2.0 and dx_w < 1.2 and dy_w < 1.2:
                         categorized["Pilares / Columns"].append(box)
-                    elif (dx > 2.0 or dy > 2.0) and dz < 0.4:
-                        if z0 > 15.0 or (z > 500.0 and z0 > 565.0):
+                    elif (dx_w > 2.0 or dy_w > 2.0) and dz_w < 0.4:
+                        if z0 > 565.0:
                             categorized["Cobertura / Roofs"].append(box)
                         else:
                             categorized["Pisos / Floors"].append(box)
-                    elif dz > 1.5 and (dx > 1.0 or dy > 1.0):
+                    elif dz_w > 1.5 and (dx_w > 1.0 or dy_w > 1.0):
                         categorized["Paredes / Walls"].append(box)
-                    elif (dx > 3.0 or dy > 3.0) and dz < 1.5:
+                    elif (dx_w > 3.0 or dy_w > 3.0) and dz_w < 1.5:
                         categorized["Estrutura / Framing"].append(box)
                     else:
                         categorized["Mobiliário / Casework"].append(box)

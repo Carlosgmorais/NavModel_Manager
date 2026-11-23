@@ -522,7 +522,7 @@ class Window(W.QMainWindow):
         self.section_tool.refresh_models()
         self.plot.remove_actor('welcome')
 
-        if previous is None and record['visible'] and len(self.models) == 1:
+        if record['visible'] and (previous is not None or len(self.models) == 1):
             self.reset_camera_navisworks()
 
         self.dirty = True
