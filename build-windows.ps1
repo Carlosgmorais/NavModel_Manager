@@ -142,7 +142,7 @@ try {
             Copy-Item -LiteralPath 'build/web-host/NavModelWebHost.exe' -Destination 'resources/web/NavModelWebHost.exe' -Force
         }
     }
-    & $pyExe -m unittest tests.test_sectioning tests.test_measurement_acceleration tests.test_web_publish
+    & $pyExe -m unittest tests.test_sectioning tests.test_measurement_acceleration tests.test_web_publish tests.test_nwd_reader
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de cortes, medicao ou publicacao Web." }
     Write-Host "Todos os testes foram aprovados com sucesso!"
 

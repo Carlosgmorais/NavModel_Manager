@@ -321,9 +321,9 @@ class Window(W.QMainWindow):
     def add_files(self):
         paths, _ = W.QFileDialog.getOpenFileNames(
             self,
-            'Adicionar modelos na posição original (DWG, STEP, IFC, DXF)',
+            'Adicionar modelos na posição original (DWG, NWD, NWC, STEP, IFC, DXF)',
             '',
-            'Modelos CAD (*.dwg *.step *.stp *.ifc *.dxf *.stl *.obj *.ply);;Todos (*)'
+            'Modelos CAD (*.dwg *.nwd *.nwc *.step *.stp *.ifc *.dxf *.stl *.obj *.ply);;Autodesk Navisworks (*.nwd *.nwc);;AutoCAD / Plant 3D (*.dwg *.dxf);;STEP / IFC (*.step *.stp *.ifc);;Todos (*)'
         )
         if paths:
             records = [

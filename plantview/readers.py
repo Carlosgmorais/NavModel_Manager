@@ -539,8 +539,11 @@ def read_model(path, unit_scale=.001, progress_callback: Optional[Callable[[floa
         warnings.append(f'Malha sem unidade: escala aplicada {unit_scale} m/unidade.')
         if progress_callback:
             progress_callback(100.0, f'Loading {path.name} ...')
+    elif ext in ('.nwd', '.nwc'):
+        from .nwd_reader import read_nwd
+        return read_nwd(path, unit_scale=unit_scale, progress_callback=progress_callback)
     else:
-        raise ValueError(f'Formato {ext} não suportado. NWC/NWD/RVT exigem SDK específico.')
+        raise ValueError(f'Formato {ext} não suportado. RVT exige SDK específico ou exportação para NWC/NWD.')
 
     if not parts:
         raise ValueError('Nenhuma geometria compatível encontrada.\n' + '\n'.join(warnings[:30]))

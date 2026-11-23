@@ -17,6 +17,8 @@ datas = [
 ]
 
 hiddenimports = [
+    'plantview',
+    'plantview.nwd_reader',
     'pyvistaqt',
     'pyvista',
     'vtk',
