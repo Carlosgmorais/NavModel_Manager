@@ -299,7 +299,7 @@ def read_nwd(
 
         parts: List[Tuple[str, pv.PolyData]] = []
 
-        # 2. Extract clean placed 3D instances from Fragments (Revit & Navisworks models)
+        # 2. Extract clean placed 3D instances from Fragments (Revit, AutoCAD, Plant 3D models)
         if 'cache\\LcOpNwdFragments' in streams:
             if progress_callback:
                 progress_callback(30.0, f'Extracting building elements ...')
@@ -307,71 +307,79 @@ def read_nwd(
             f_info = streams['cache\\LcOpNwdFragments']
             frag_bytes = decompress_navisworks_stream(f, f_info['offset'], f_info['length'])
 
-            found_elements = []
-            seen_centers = set()
+            candidates = []
+            cur = 0
+            raw_len = len(frag_bytes)
+            while cur < raw_len - 116:
+                pos = struct.unpack('<3d', frag_bytes[cur:cur+24])
+                if all(np.isfinite(pos)) and all(abs(c) < 500000.0 for c in pos):
+                    found_b = None
+                    for b_off in (92, 72):
+                        b = struct.unpack('<6f', frag_bytes[cur+b_off:cur+b_off+24])
+                        if all(np.isfinite(b)) and b[3] > b[0] and b[4] > b[1] and b[5] > b[2]:
+                            if all(abs(x) < 200000.0 for x in b) and not any(x != 0.0 and abs(x) < 1e-5 for x in b):
+                                dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
+                                if 0.005 <= dx <= 100000.0 and 0.005 <= dy <= 100000.0 and 0.005 <= dz <= 100000.0:
+                                    found_b = b
+                                    break
+                    if found_b is not None:
+                        candidates.append((pos, found_b))
+                        cur += 56
+                        continue
+                cur += 4
 
-            for pos in range(0, len(frag_bytes) - 120, 4):
-                b = struct.unpack('<6f', frag_bytes[pos+92:pos+92+24])
-                if not all(np.isfinite(b)):
-                    continue
-                if b[3] > b[0] and b[4] > b[1] and b[5] > b[2]:
-                    dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
-                    if 0.02 <= dx <= 300.0 and 0.02 <= dy <= 300.0 and 0.01 <= dz <= 300.0:
-                        x, y, z = struct.unpack('<3d', frag_bytes[pos:pos+24])
-                        if np.isfinite([x, y, z]).all() and abs(x) < 50000 and abs(y) < 50000 and abs(z) < 50000:
-                            k = (round(x, 2), round(y, 2), round(z, 2), round(dx, 2), round(dy, 2), round(dz, 2))
-                            if k not in seen_centers:
-                                seen_centers.add(k)
-                                found_elements.append(((x, y, z), b))
+            if candidates:
+                all_dims = [max(c[1][3]-c[1][0], c[1][4]-c[1][1], c[1][5]-c[1][2]) for c in candidates]
+                scale = 0.001 if float(np.median(all_dims)) > 15.0 else 1.0
 
-            if found_elements:
-                # Filter out unplaced family prototypes at origin if real placed coordinates exist
-                placed_elements = [
-                    e for e in found_elements
-                    if abs(e[0][0]) > 1.0 and abs(e[0][1]) > 1.0 and abs(e[0][2]) > 1.0
-                ]
-                if len(placed_elements) >= 5:
-                    found_elements = placed_elements
+                raw_boxes = []
+                for pos, b in candidates:
+                    x0, x1 = (pos[0] + b[0]) * scale, (pos[0] + b[3]) * scale
+                    y0, y1 = (pos[1] + b[1]) * scale, (pos[1] + b[4]) * scale
+                    z0, z1 = (pos[2] + b[2]) * scale, (pos[2] + b[5]) * scale
+                    raw_boxes.append((min(x0, x1), min(y0, y1), min(z0, z1), max(x0, x1), max(y0, y1), max(z0, z1)))
+
+                # Discard unplaced family symbols at (0, 0, 0) if placed site coordinates exist (> 50m)
+                site_boxes = [b for b in raw_boxes if (abs(0.5*(b[0]+b[3])) > 50.0 or abs(0.5*(b[1]+b[4])) > 50.0)]
+                boxes_to_cluster = site_boxes if len(site_boxes) >= 5 else raw_boxes
+
+                centers = np.array([[0.5*(b[0]+b[3]), 0.5*(b[1]+b[4]), 0.5*(b[2]+b[5])] for b in boxes_to_cluster])
+                med_c = np.median(centers, axis=0)
+                clean_boxes = [b for i, b in enumerate(boxes_to_cluster) if np.all(np.abs(centers[i] - med_c) < 1200.0)]
+                if not clean_boxes:
+                    clean_boxes = boxes_to_cluster
 
                 categorized: Dict[str, List[Tuple[float, float, float, float, float, float]]] = {
-                    "Paredes / Walls": [],
-                    "Pisos / Floors": [],
-                    "Cobertura / Roofs": [],
+                    "Tubulação / Piping": [],
                     "Pilares / Columns": [],
+                    "Pisos / Floors": [],
+                    "Paredes / Walls": [],
                     "Estrutura / Framing": [],
-                    "Mobiliário / Casework": []
+                    "Equipamentos / Equipment": []
                 }
 
-                for (x, y, z), b in found_elements:
-                    dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
-                    # Map Navisworks Y-up coordinates to VTK Z-up (Elevation)
-                    x0, x1 = x + b[0], x + b[3]
-                    y0, y1 = z + b[2], z + b[5]
-                    z0, z1 = y + b[1], y + b[4]
-                    box = (x0, y0, z0, x1, y1, z1)
+                for box in clean_boxes:
+                    dx = box[3] - box[0]
+                    dy = box[4] - box[1]
+                    dz = box[5] - box[2]
 
-                    dx_w = x1 - x0
-                    dy_w = y1 - y0
-                    dz_w = z1 - z0
-
-                    if dz_w > 2.0 and dx_w < 1.2 and dy_w < 1.2:
+                    if scale == 0.001 and (dx > 3.0 * max(dy, dz) or dy > 3.0 * max(dx, dz) or dz > 3.0 * max(dx, dy)):
+                        categorized["Tubulação / Piping"].append(box)
+                    elif dz > 2.0 and dx < 1.2 and dy < 1.2:
                         categorized["Pilares / Columns"].append(box)
-                    elif (dx_w > 2.0 or dy_w > 2.0) and dz_w < 0.4:
-                        if z0 > 565.0:
-                            categorized["Cobertura / Roofs"].append(box)
-                        else:
-                            categorized["Pisos / Floors"].append(box)
-                    elif dz_w > 1.5 and (dx_w > 1.0 or dy_w > 1.0):
+                    elif (dx > 2.0 or dy > 2.0) and dz < 0.4:
+                        categorized["Pisos / Floors"].append(box)
+                    elif dz > 1.5 and (dx > 1.0 or dy > 1.0):
                         categorized["Paredes / Walls"].append(box)
-                    elif (dx_w > 3.0 or dy_w > 3.0) and dz_w < 1.5:
+                    elif (dx > 3.0 or dy > 3.0) and dz < 1.5:
                         categorized["Estrutura / Framing"].append(box)
                     else:
-                        categorized["Mobiliário / Casework"].append(box)
+                        categorized["Equipamentos / Equipment"].append(box)
 
-                for cat_name, boxes in categorized.items():
-                    if not boxes:
+                for cat_name, b_list in categorized.items():
+                    if not b_list:
                         continue
-                    mesh = assemble_boxes_to_mesh(boxes)
+                    mesh = assemble_boxes_to_mesh(b_list)
                     if mesh is not None:
                         color = resolve_layer_color(cat_name)
                         attach_mesh_metadata(mesh, cat_name, color)

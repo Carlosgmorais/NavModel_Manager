@@ -444,6 +444,8 @@ class Window(W.QMainWindow):
                 cy - 0.85 * diag,
                 cz + 0.55 * diag
             )
+            self.navigation.orbit_pivot = np.array([cx, cy, cz], dtype=float)
+            self.navigation.last_valid_target = np.array([cx, cy, cz], dtype=float)
             if renderer:
                 self.navigation.update_clipping_range(camera, renderer, full_reset=True)
         self.plot.render()

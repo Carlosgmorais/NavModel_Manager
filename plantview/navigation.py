@@ -142,7 +142,7 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         return True
 
     def update_clipping_range(self, camera=None, renderer=None, full_reset=False):
-        """Maintain a tight near plane (down to 1 mm) and generous far plane so close-up objects never clip."""
+        """Maintain a tight near plane and generous far plane so objects never clip at any coordinates."""
         if camera is None or renderer is None:
             camera, renderer = self.camera()
         if not camera or not renderer:
@@ -153,8 +153,8 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         eye = np.array(camera.GetPosition(), dtype=float)
         focal = np.array(camera.GetFocalPoint(), dtype=float)
         dist = max(float(np.linalg.norm(focal - eye)), 0.01)
-        safe_near = max(min(dist * 0.01, 0.05), 0.001)
-        safe_far = max(float(far), dist * 50.0, 2000.0)
+        safe_near = max(min(dist * 0.01, 1.0), 0.005)
+        safe_far = max(dist * 100.0, float(far), 200000.0)
         camera.SetClippingRange(safe_near, safe_far)
 
     def _is_shift_down(self, interactor=None):
@@ -260,12 +260,13 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         hit = self._pick_target_point(x, y, renderer, camera)
         if hit is not None:
             pt, depth = hit
-            self.orbit_pivot = pt
-            # Align focal point depth with the picked surface along the exact current line of sight (zero jump)
+            self.orbit_pivot = pt.copy()
+            self.last_valid_target = pt.copy()
             camera.SetFocalPoint(*(eye + view_dir * max(depth, 0.02)))
         else:
             target_pt, ref_depth = self._scene_reference_target(renderer, eye, view_dir, focal)
-            self.orbit_pivot = target_pt
+            self.orbit_pivot = target_pt.copy()
+            self.last_valid_target = target_pt.copy()
             camera.SetFocalPoint(*(eye + view_dir * max(ref_depth, 0.05)))
 
     def left_down(self, obj, event):
@@ -278,8 +279,12 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         self._click_start = interactor.GetEventPosition()
         self._active_button = 'left'
         self.previous = interactor.GetEventPosition()
-        self.drag_mode = 'look'
         self._record_pre_movement()
+        if not self.selection_mode:
+            self.drag_mode = 'orbit'
+            self._init_orbit_pivot(self.previous[0], self.previous[1])
+        else:
+            self.drag_mode = 'look'
         if interactor and interactor.GetRenderWindow():
             interactor.GetRenderWindow().SetDesiredUpdateRate(30.0)
 
@@ -301,10 +306,9 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         interactor = self.GetInteractor()
         self._active_button = 'right'
         self.previous = interactor.GetEventPosition()
-        self.drag_mode = 'orbit' if self._is_shift_down(interactor) else 'look'
+        self.drag_mode = 'orbit'
         self._record_pre_movement()
-        if self.drag_mode == 'orbit':
-            self._init_orbit_pivot(self.previous[0], self.previous[1])
+        self._init_orbit_pivot(self.previous[0], self.previous[1])
         if interactor and interactor.GetRenderWindow():
             interactor.GetRenderWindow().SetDesiredUpdateRate(30.0)
 
@@ -318,7 +322,6 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
         self._active_button = None
         self.drag_mode = None
         self.previous = None
-        self.orbit_pivot = None
         self._move_count = 0
         self._commit_pre_movement()
         interactor = self.GetInteractor()
@@ -401,47 +404,34 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             camera.SetViewUp(0.0, 0.0, 1.0)
 
         elif self.drag_mode == 'orbit':
-            # Autodesk Navisworks / AutoCAD 3D Orbit around the inspected 3D surface pivot:
-            # - Rotates the camera frame around `self.orbit_pivot` preserving Z-up upright horizon
-            # - Zero jump at start even when orbiting an off-center object
+            # Autodesk Navisworks / AutoCAD 3D Turntable Orbit around pivot:
             eye = np.array(camera.GetPosition(), dtype=float)
             focal = np.array(camera.GetFocalPoint(), dtype=float)
-            pivot = self.orbit_pivot if self.orbit_pivot is not None else focal
+            pivot = self.orbit_pivot if self.orbit_pivot is not None else (self.last_valid_target if self.last_valid_target is not None else focal)
 
-            view_vec = focal - eye
-            dist = float(np.linalg.norm(view_vec))
-            if dist < 1e-6:
-                dist = 1.0
-                view_dir = np.array([1.0, 0.0, 0.0])
-            else:
-                view_dir = view_vec / dist
+            rel = eye - pivot
+            r = float(np.linalg.norm(rel))
+            if r < 1e-4:
+                r = 1.0
+                rel = np.array([1.0, 0.0, 0.0])
 
-            horiz_dist = np.hypot(view_dir[0], view_dir[1])
-            yaw = math.atan2(view_dir[1], view_dir[0])
-            pitch = math.atan2(view_dir[2], max(horiz_dist, 1e-9))
-
-            cos_p = math.cos(pitch)
-            old_dir = np.array([cos_p * math.cos(yaw), cos_p * math.sin(yaw), math.sin(pitch)], dtype=float)
-            old_right = np.array([-math.sin(yaw), math.cos(yaw), 0.0], dtype=float)
-            old_up = np.cross(old_right, old_dir)
-
-            rel_eye = eye - pivot
-            c_dir = float(np.dot(rel_eye, old_dir))
-            c_right = float(np.dot(rel_eye, old_right))
-            c_up = float(np.dot(rel_eye, old_up))
+            horiz_dist = float(np.hypot(rel[0], rel[1]))
+            yaw = math.atan2(rel[1], rel[0])
+            pitch = math.atan2(rel[2], max(horiz_dist, 1e-9))
 
             sens = 0.005
             new_yaw = yaw - dx * sens
             new_pitch = float(np.clip(pitch + dy * sens, -math.radians(88.5), math.radians(88.5)))
 
             cos_np = math.cos(new_pitch)
-            new_dir = np.array([cos_np * math.cos(new_yaw), cos_np * math.sin(new_yaw), math.sin(new_pitch)], dtype=float)
-            new_right = np.array([-math.sin(new_yaw), math.cos(new_yaw), 0.0], dtype=float)
-            new_up = np.cross(new_right, new_dir)
+            new_rel = np.array([
+                r * cos_np * math.cos(new_yaw),
+                r * cos_np * math.sin(new_yaw),
+                r * math.sin(new_pitch)
+            ], dtype=float)
 
-            new_eye = pivot + c_dir * new_dir + c_right * new_right + c_up * new_up
-            focal_dist = max(abs(c_dir), dist, 0.02)
-            new_focal = new_eye + new_dir * focal_dist
+            new_eye = pivot + new_rel
+            new_focal = pivot
 
             camera.SetPosition(*new_eye)
             camera.SetFocalPoint(*new_focal)
@@ -477,6 +467,10 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
 
             camera.SetPosition(*(eye + offset))
             camera.SetFocalPoint(*(focal + offset))
+            if self.orbit_pivot is not None:
+                self.orbit_pivot += offset
+            if self.last_valid_target is not None:
+                self.last_valid_target += offset
 
         # Fast O(1) near/far clipping plane update so objects never clip during close-up rotation
         self.update_clipping_range(camera, renderer, full_reset=False)
@@ -511,64 +505,46 @@ class NavisworksStyle(vtk.vtkInteractorStyleUser):
             zoom_frac = min(0.20 * speed, 0.45)
 
             hit = None
-            now = time.monotonic()
             if interactor:
                 mx, my = interactor.GetEventPosition()
-                # Reuse cached pick target during rapid scroll bursts if cursor stayed within 6px
-                if (
-                    self._zoom_pick_xy is not None
-                    and abs(mx - self._zoom_pick_xy[0]) <= 6
-                    and abs(my - self._zoom_pick_xy[1]) <= 6
-                    and (now - self._zoom_pick_time) < 0.55
-                ):
-                    if self._zoom_target_pt is not None:
-                        d_cached = float(np.dot(self._zoom_target_pt - eye, view_dir))
-                        if d_cached > 1e-3:
-                            hit = (self._zoom_target_pt, d_cached)
-                else:
-                    self._zoom_pick_xy = (mx, my)
-                    hit = self._pick_single_point(int(mx), int(my), renderer, eye, view_dir)
-                    self._zoom_target_pt = hit[0].copy() if hit is not None else None
-                self._zoom_pick_time = now
+                hit = self._pick_single_point(int(mx), int(my), renderer, eye, view_dir)
 
             if hit is not None:
-                pt, depth = hit
-                if direction > 0:
-                    to_pt = pt - eye
-                    to_pt_len = max(float(np.linalg.norm(to_pt)), 1e-6)
-                    # Responsive step: proportional when far, with a solid minimum (0.05m * speed)
-                    # so the camera never crawls asymptotically or feels blocked by an invisible barrier
-                    step = max(depth * zoom_frac, 0.05 * speed)
-                    if depth > 0.06:
-                        actual_step = min(step, to_pt_len * 0.85)
-                        movement = (to_pt / to_pt_len) * actual_step
-                        new_dist = max(depth - actual_step, 0.05)
-                    else:
-                        # Close to surface (<6cm): push smoothly forward through the surface along view_dir
-                        movement = view_dir * step
-                        new_dist = max(dist, 0.25)
-                    new_eye = eye + movement
-                    new_focal = new_eye + view_dir * new_dist
-                else:
-                    ref_dist = max(depth, 0.20)
-                    step = max(ref_dist * zoom_frac, 0.05 * speed)
-                    new_eye = eye - view_dir * step
-                    new_dist = ref_dist + step
-                    new_focal = new_eye + view_dir * new_dist
+                target_pt = hit[0].copy()
+            elif self.orbit_pivot is not None:
+                target_pt = self.orbit_pivot.copy()
+            elif self.last_valid_target is not None:
+                target_pt = self.last_valid_target.copy()
             else:
-                _, ref_depth = self._scene_reference_target(renderer, eye, view_dir, focal)
-                eff_dist = max(dist, min(ref_depth, 250.0), 0.25)
-                step = max(eff_dist * zoom_frac, 0.05 * speed)
-                if direction > 0:
-                    new_eye = eye + view_dir * step
-                    new_dist = max(eff_dist - step, 0.05)
+                target_pt, _ = self._scene_reference_target(renderer, eye, view_dir, focal)
+
+            to_target = target_pt - eye
+            target_dist = float(np.linalg.norm(to_target))
+
+            if direction > 0:
+                if target_dist > 0.10:
+                    step = min(target_dist * zoom_frac, target_dist * 0.85)
+                    new_eye = eye + (to_target / target_dist) * step
                 else:
-                    new_eye = eye - view_dir * step
-                    new_dist = eff_dist + step
-                new_focal = new_eye + view_dir * new_dist
+                    new_eye = eye + view_dir * max(0.05 * speed, 0.01)
+            else:
+                step = max(target_dist * zoom_frac, 0.05 * speed)
+                new_eye = eye - (to_target / max(target_dist, 1e-6)) * step
+
+            new_focal = target_pt
+            self.orbit_pivot = target_pt.copy()
+            self.last_valid_target = target_pt.copy()
 
             camera.SetPosition(*new_eye)
             camera.SetFocalPoint(*new_focal)
+            camera.SetViewUp(0.0, 0.0, 1.0)
+
+        self.update_clipping_range(camera, renderer, full_reset=False)
+        if interactor:
+            interactor.Render()
+        self._commit_pre_movement()
+        if self.on_change:
+            self.on_change(camera)
 
         self.update_clipping_range(camera, renderer, full_reset=False)
         if interactor:
