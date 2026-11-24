@@ -79,72 +79,26 @@ def parse_navisworks_toc(f, file_size: int) -> Dict[str, Dict[str, Any]]:
 
 
 def decompress_navisworks_stream(f, offset: int, length: int) -> bytes:
-    """Decompress a complete Navisworks substream into memory with zero-copy slices."""
-    f.seek(offset)
-    raw = f.read(length)
-    z = raw.find(b'\x78\x9c')
-    if z == -1:
-        return raw
-
-    chunks = []
-    cur = z
-    raw_len = len(raw)
-    mview = memoryview(raw)
-    while cur < raw_len:
-        while cur < raw_len and mview[cur] == 0:
-            cur += 1
-        if cur >= raw_len or mview[cur:cur+2] != b'\x78\x9c':
-            next_z = raw.find(b'\x78\x9c', cur)
-            if next_z != -1 and (next_z - cur) <= 256:
-                cur = next_z
-            else:
-                break
-        d = zlib.decompressobj()
-        try:
-            slice_end = min(raw_len, cur + 131072)
-            decomp = d.decompress(mview[cur:slice_end])
-            consumed = (slice_end - cur) - len(d.unused_data)
-            chunks.append(decomp)
-            cur += consumed
-        except Exception:
-            break
-    return b''.join(chunks)
+    """Bounded small-stream extraction; use iter_stream_chunks for large geometry."""
+    from .navis_stream import iter_zlib_members
+    if length > 256 * 1024 * 1024:
+        raise ValueError("Navisworks metadata stream too large for in-memory decoding")
+    return b"".join(iter_zlib_members(
+        f, offset, length, max_total_output=256 * 1024 * 1024
+    ))
 
 
 def iter_stream_chunks(f, offset: int, length: int, max_chunks: int = 1500):
-    """Memory-efficient generator yielding 64KB uncompressed chunks from a stream."""
-    f.seek(offset)
-    raw = f.read(length)
-    z = raw.find(b'\x78\x9c')
-    if z == -1:
-        if raw:
-            yield raw
-        return
-
-    cur = z
-    raw_len = len(raw)
+    """Yield bounded decompressed portions without loading whole compressed files."""
+    from .navis_stream import iter_zlib_members
+    # The legacy argument is retained for compatibility. Never silently truncate
+    # and display partial geometry as if the file were fully decoded.
     count = 0
-    mview = memoryview(raw)
-    while cur < raw_len and count < max_chunks:
-        while cur < raw_len and mview[cur] == 0:
-            cur += 1
-        if cur >= raw_len or mview[cur:cur+2] != b'\x78\x9c':
-            next_z = raw.find(b'\x78\x9c', cur)
-            if next_z != -1 and (next_z - cur) <= 256:
-                cur = next_z
-            else:
-                break
-        d = zlib.decompressobj()
-        try:
-            slice_end = min(raw_len, cur + 131072)
-            chunk = d.decompress(mview[cur:slice_end])
-            consumed = (slice_end - cur) - len(d.unused_data)
-            cur += consumed
-            count += 1
-            if chunk:
-                yield chunk
-        except Exception:
-            break
+    for chunk in iter_zlib_members(f, offset, length):
+        count += 1
+        if count > max_chunks:
+            raise ValueError("Navisworks stream exceeds configured chunk budget")
+        yield chunk
 
 
 def extract_hierarchy_categories(hier_bytes: bytes) -> List[str]:
@@ -269,6 +223,22 @@ def read_nwd(
     path = Path(path)
     file_size = path.stat().st_size
     warnings = []
+    # This legacy reader does not decode authoritative Navisworks mesh records,
+    # per-instance transforms, material assignments, or object identifiers.
+    # Its historic vertex/box scanner is explicitly opt-in for diagnostics.
+    allow_approximate = os.environ.get("NAVMODEL_ALLOW_APPROXIMATE_NAVIS", "") == "1"
+    if not allow_approximate:
+        raise ValueError(
+            "Leitura fiel de NWC/NWD ainda não implementada. O modo anterior "
+            "reconstruía caixas e triângulos por aproximação, produzindo geometria "
+            "distorcida. Para diagnosticar APENAS (não utilizar em engenharia), "
+            "defina NAVMODEL_ALLOW_APPROXIMATE_NAVIS=1. "
+            "Mantenha o arquivo original para validação do novo decodificador."
+        )
+    warnings.append(
+        "NWC/NWD MODO EXPERIMENTAL: malhas/caixas aproximadas; não equivalem "
+        "à geometria original do Navisworks. Não usar para medições."
+    )
 
     if progress_callback:
         progress_callback(5.0, f'Opening {path.name} ...')
